@@ -1,0 +1,6 @@
+* esp32cam-ai Specification
+
+* The device will capture images as frequently as possible and maintain an internal buffer of the last 30 frames.
+* If the current image differs from the previous image by a certain %-age threshold, the device will create an MP4 and of the last 30 frames and the next 60 frames.
+* The device will use Claude's remote API to identify what is happening in the MP4, and write a .txt file containing this summary, and store it on the device.
+* This .txt file will be pushed with MQTT to an MQTT service
