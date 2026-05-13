@@ -7,14 +7,14 @@
 // fraction of changed cells exceeds threshold_pct.
 class MotionDetector {
 public:
+    static constexpr int GW = 16;
+    static constexpr int GH = 12;
+
     explicit MotionDetector(uint8_t threshold_pct);
     bool update(const camera_fb_t* fb);
 
 private:
     uint8_t threshold_pct_;
-    // 16x12 downsampled luma grid from the previous frame.
-    static constexpr int GW = 16;
-    static constexpr int GH = 12;
     uint8_t prev_[GW * GH];
     bool has_prev_;
 };
