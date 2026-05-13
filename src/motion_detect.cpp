@@ -1,57 +1,71 @@
 #include "motion_detect.h"
-#include <img_converters.h>
-#include <esp_heap_caps.h>
+#include <esp_jpg_decode.h>
 #include <string.h>
 
-// JPEG_DIV_8 on a 640x480 frame → 80x60 RGB565 pixels (~9.6 KB).
-static constexpr int SCALED_W = 80;
-static constexpr int SCALED_H = 60;
-
-// Block size mapping SCALED → GW x GH grid.
-static constexpr int BW = SCALED_W / MotionDetector::GW;  // 5
-static constexpr int BH = SCALED_H / MotionDetector::GH;  // 5
-
-// Per-cell luma change that counts as motion (~6% of the 0-255 range).
 static constexpr uint8_t LUMA_STEP = 16;
+
+struct DecodeCtx {
+    const uint8_t* src;
+    size_t         src_len;
+    uint32_t       sums[MotionDetector::GW * MotionDetector::GH];
+    uint32_t       counts[MotionDetector::GW * MotionDetector::GH];
+    uint16_t       img_w;
+    uint16_t       img_h;
+};
+
+static size_t jpegReader(void* arg, size_t index, uint8_t* buf, size_t len) {
+    auto* ctx = (DecodeCtx*)arg;
+    if (index >= ctx->src_len) return 0;
+    size_t n = ctx->src_len - index;
+    if (n > len) n = len;
+    memcpy(buf, ctx->src + index, n);
+    return n;
+}
+
+// Callback receives RGB888 blocks at (x,y) of size (w,h).
+// Maps each pixel into the GW×GH luma grid and accumulates.
+static bool jpegWriter(void* arg, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t* data) {
+    auto* ctx = (DecodeCtx*)arg;
+    if (!data || ctx->img_w == 0 || ctx->img_h == 0) return true;
+
+    constexpr int GW = MotionDetector::GW;
+    constexpr int GH = MotionDetector::GH;
+
+    for (uint16_t py = 0; py < h; ++py) {
+        for (uint16_t px = 0; px < w; ++px) {
+            const uint8_t* rgb = data + (py * w + px) * 3;
+            uint8_t luma = (uint8_t)((77u * rgb[0] + 150u * rgb[1] + 29u * rgb[2]) >> 8);
+            int col = (int)(x + px) * GW / ctx->img_w;
+            int row = (int)(y + py) * GH / ctx->img_h;
+            if ((unsigned)col < (unsigned)GW && (unsigned)row < (unsigned)GH) {
+                ctx->sums [row * GW + col] += luma;
+                ctx->counts[row * GW + col]++;
+            }
+        }
+    }
+    return true;
+}
 
 MotionDetector::MotionDetector(uint8_t threshold_pct)
     : threshold_pct_(threshold_pct), has_prev_(false) {
     memset(prev_, 0, sizeof(prev_));
 }
 
-static uint8_t luma565(uint16_t px) {
-    uint8_t r5 = (px >> 11) & 0x1f;
-    uint8_t g6 = (px >> 5)  & 0x3f;
-    uint8_t b5 =  px        & 0x1f;
-    // Expand to 8-bit.
-    uint16_t r = (r5 << 3) | (r5 >> 2);
-    uint16_t g = (g6 << 2) | (g6 >> 4);
-    uint16_t b = (b5 << 3) | (b5 >> 2);
-    // BT.601 luma: Y = 0.299R + 0.587G + 0.114B  (integer approximation).
-    return (uint8_t)((77 * r + 150 * g + 29 * b) >> 8);
-}
-
 bool MotionDetector::update(const camera_fb_t* fb) {
-    auto* scaled = (uint16_t*)heap_caps_malloc(SCALED_W * SCALED_H * 2, MALLOC_CAP_SPIRAM);
-    if (!scaled) return false;
+    DecodeCtx ctx = {};
+    ctx.src     = fb->buf;
+    ctx.src_len = fb->len;
+    ctx.img_w   = (uint16_t)fb->width;
+    ctx.img_h   = (uint16_t)fb->height;
 
-    if (!jpg2rgb565(fb->buf, fb->len, (uint8_t*)scaled, JPEG_DIV_8)) {
-        heap_caps_free(scaled);
+    if (esp_jpg_decode(fb->len, JPG_SCALE_8X, jpegReader, jpegWriter, &ctx) != ESP_OK) {
         return false;
     }
 
-    // Downsample SCALED_W×SCALED_H → GW×GH by averaging BW×BH pixel blocks.
     uint8_t cur[GW * GH];
-    for (int row = 0; row < GH; ++row) {
-        for (int col = 0; col < GW; ++col) {
-            uint32_t sum = 0;
-            for (int by = 0; by < BH; ++by)
-                for (int bx = 0; bx < BW; ++bx)
-                    sum += luma565(scaled[(row * BH + by) * SCALED_W + (col * BW + bx)]);
-            cur[row * GW + col] = (uint8_t)(sum / (BW * BH));
-        }
+    for (int i = 0; i < GW * GH; ++i) {
+        cur[i] = ctx.counts[i] ? (uint8_t)(ctx.sums[i] / ctx.counts[i]) : 0;
     }
-    heap_caps_free(scaled);
 
     if (!has_prev_) {
         memcpy(prev_, cur, sizeof(cur));
