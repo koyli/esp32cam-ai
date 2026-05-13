@@ -44,7 +44,30 @@ static bool initCamera() {
 
 static bool initWifi() {
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    int n = WiFi.scanNetworks();
+    if (n <= 0) return false;
+
+    // Find the known network with the best RSSI.
+    const WifiCred* best = nullptr;
+    int32_t best_rssi = INT32_MIN;
+    static constexpr size_t CRED_COUNT = sizeof(WIFI_CREDS) / sizeof(WIFI_CREDS[0]);
+
+    for (int i = 0; i < n; ++i) {
+        String found = WiFi.SSID(i);
+        for (size_t j = 0; j < CRED_COUNT; ++j) {
+            if (found == WIFI_CREDS[j].ssid && WiFi.RSSI(i) > best_rssi) {
+                best_rssi = WiFi.RSSI(i);
+                best = &WIFI_CREDS[j];
+            }
+        }
+    }
+    WiFi.scanDelete();
+
+    if (!best) return false;
+
+    Serial.printf("wifi: connecting to %s (%d dBm)\n", best->ssid, best_rssi);
+    WiFi.begin(best->ssid, best->pass);
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
         delay(250);

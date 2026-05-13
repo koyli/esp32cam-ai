@@ -6,3 +6,4 @@
 .gcc-flags.json
 *.swp
 .DS_Store
+include/config.h

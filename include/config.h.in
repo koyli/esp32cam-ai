@@ -1,8 +1,14 @@
 #pragma once
 
 // ---------------- Wi-Fi ----------------
-#define WIFI_SSID       "YOUR_SSID"
-#define WIFI_PASSWORD   "YOUR_PASSWORD"
+// List every known network. On boot the device scans and connects to the
+// known entry with the strongest signal. Copy this file to config.h and
+// fill in your real credentials — config.h is gitignored.
+struct WifiCred { const char* ssid; const char* pass; };
+static const WifiCred WIFI_CREDS[] = {
+    {"SSID_1", "PASS_1"},
+    {"SSID_2", "PASS_2"},
+};
 
 // ---------------- MQTT -----------------
 #define MQTT_HOST       "broker.example.com"
