@@ -31,7 +31,7 @@ static const WifiCred WIFI_CREDS[] = {
 #define POST_FRAMES       60
 
 // Frames sampled (evenly) from each AVI for the Claude API call.
-#define CLAUDE_SAMPLE_FRAMES  8
+#define CLAUDE_SAMPLE_FRAMES  4
 
 // Motion detection: pixel-difference threshold as a percentage of the frame.
 // A frame whose downsampled luma differs from the previous by more than this

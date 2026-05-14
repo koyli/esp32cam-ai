@@ -2,7 +2,6 @@
 #include "config.h"
 
 #include <WiFiClientSecure.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <SD_MMC.h>
 #include <mbedtls/base64.h>
@@ -48,17 +47,20 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     auto* body    = (char*)    heap_caps_malloc(BODY_CAP,                               MALLOC_CAP_SPIRAM);
 
     if (!infos || !jpeg || !body) {
+        Serial.println("claude: PSRAM alloc failed");
         heap_caps_free(infos); heap_caps_free(jpeg); heap_caps_free(body);
         return false;
     }
 
     File f = SD_MMC.open(avi_path, FILE_READ);
     if (!f) {
+        Serial.printf("claude: cannot open %s\n", avi_path);
         heap_caps_free(infos); heap_caps_free(jpeg); heap_caps_free(body);
         return false;
     }
 
     size_t total = scanFrames(f, infos, MAX_FRAME_SLOTS);
+    Serial.printf("claude: %u frames found in AVI\n", (unsigned)total);
     if (total == 0) {
         f.close();
         heap_caps_free(infos); heap_caps_free(jpeg); heap_caps_free(body);
@@ -111,26 +113,68 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         first ? "" : ",");
 
     WiFiClientSecure tls;
-    tls.setInsecure();   // TODO: pin Anthropic's CA root in production
-    HTTPClient http;
-    http.setTimeout(30000);
-    String url = String("https://") + CLAUDE_API_HOST + CLAUDE_API_PATH;
-    if (!http.begin(tls, url)) { heap_caps_free(body); return false; }
+    tls.setInsecure();
 
-    http.addHeader("content-type", "application/json");
-    http.addHeader("x-api-key", CLAUDE_API_KEY);
-    http.addHeader("anthropic-version", "2023-06-01");
+    Serial.printf("claude: connecting to %s\n", CLAUDE_API_HOST);
+    if (!tls.connect(CLAUDE_API_HOST, 443)) {
+        Serial.println("claude: TLS connect failed");
+        heap_caps_free(body); return false;
+    }
 
-    int code = http.POST((uint8_t*)body, pos);
+    // Send headers
+    tls.printf("POST %s HTTP/1.0\r\n", CLAUDE_API_PATH);
+    tls.printf("Host: %s\r\n", CLAUDE_API_HOST);
+    tls.printf("Content-Type: application/json\r\n");
+    tls.printf("x-api-key: %s\r\n", CLAUDE_API_KEY);
+    tls.printf("anthropic-version: 2023-06-01\r\n");
+    tls.printf("Content-Length: %u\r\n\r\n", (unsigned)pos);
+
+    // Send body from PSRAM in small DRAM chunks (ESP32 AES DMA cannot access PSRAM)
+    Serial.printf("claude: sending %u bytes\n", (unsigned)pos);
+    static const size_t CHUNK = 2048;
+    auto* chunk = (uint8_t*)malloc(CHUNK);
+    if (!chunk) { heap_caps_free(body); tls.stop(); return false; }
+    size_t sent = 0;
+    while (sent < pos) {
+        size_t n = pos - sent; if (n > CHUNK) n = CHUNK;
+        memcpy(chunk, body + sent, n);
+        size_t w = tls.write(chunk, n);
+        if (!w) { Serial.printf("claude: write stalled at %u/%u\n", (unsigned)sent, (unsigned)pos); break; }
+        sent += w;
+    }
+    free(chunk);
     heap_caps_free(body);
+    Serial.printf("claude: sent %u/%u bytes\n", (unsigned)sent, (unsigned)pos);
 
-    if (code != 200) { http.end(); return false; }
+    // Read status line
+    uint32_t t0 = millis();
+    while (!tls.available() && millis() - t0 < 30000) delay(10);
+    String status = tls.readStringUntil('\n'); status.trim();
+    Serial.println("claude: " + status);
+    int http_code = status.length() >= 12 ? status.substring(9, 12).toInt() : 0;
 
-    String resp = http.getString();
-    http.end();
+    // Skip response headers
+    while (tls.connected() || tls.available()) {
+        String line = tls.readStringUntil('\n'); line.trim();
+        if (!line.length()) break;
+    }
+
+    // Read response body
+    String resp;
+    t0 = millis();
+    while ((tls.connected() || tls.available()) && millis() - t0 < 30000) {
+        while (tls.available()) resp += (char)tls.read();
+        delay(1);
+    }
+    tls.stop();
+
+    if (http_code != 200) {
+        Serial.println("claude: " + resp.substring(0, 300));
+        return false;
+    }
 
     JsonDocument res;
-    if (deserializeJson(res, resp)) return false;
+    if (deserializeJson(res, resp)) { Serial.println("claude: JSON parse failed"); return false; }
     out = res["content"][0]["text"] | "";
     return out.length() > 0;
 }
