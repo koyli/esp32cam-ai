@@ -12,7 +12,7 @@ static const WifiCred WIFI_CREDS[] = {
 
 // ---------------- MQTT -----------------
 #define MQTT_HOST       "broker.example.com"
-#define MQTT_PORT       1883
+#define MQTT_PORT       8883
 #define MQTT_USER       ""
 #define MQTT_PASS       ""
 #define MQTT_TOPIC      "esp32cam-ai/events"

@@ -2,13 +2,14 @@
 #include "config.h"
 
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 
-static WiFiClient   net;
-static PubSubClient client(net);
+static WiFiClientSecure net;
+static PubSubClient     client(net);
 
 bool MqttPublisher::begin() {
+    net.setInsecure();
     client.setServer(MQTT_HOST, MQTT_PORT);
     client.setBufferSize(2048);
     return true;
