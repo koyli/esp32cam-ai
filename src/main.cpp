@@ -158,8 +158,8 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
     }
     w.end();
 
-    String summary;
-    if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary)) {
+    String summary, plates;
+    if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
         summary = "(claude summary unavailable)";
     }
 
@@ -169,7 +169,14 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
     if (t) { t.print(summary); t.close(); }
 
     Serial.printf("summary: %s\n", summary.c_str());
+    if (plates.length()) Serial.printf("plates: %s\n", plates.c_str());
+
     Serial.printf("motion: publishing to %s\n", MQTT_TOPIC);
     bool ok = mqtt.publish(MQTT_TOPIC, summary.c_str());
     Serial.printf("motion: publish %s\n", ok ? "ok" : "failed");
+
+    if (plates.length()) {
+        Serial.printf("motion: publishing plates to %s\n", MQTT_PLATES_TOPIC);
+        mqtt.publish(MQTT_PLATES_TOPIC, plates.c_str());
+    }
 }

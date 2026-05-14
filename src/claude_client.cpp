@@ -41,7 +41,7 @@ static size_t frameIndex(uint8_t i, uint8_t sample_count, size_t total) {
     return (size_t)i * (total - 1) / (sample_count - 1);
 }
 
-bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String& out) {
+bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String& out, String& plates) {
     auto* infos   = (ChunkInfo*)heap_caps_malloc(MAX_FRAME_SLOTS * sizeof(ChunkInfo), MALLOC_CAP_SPIRAM);
     auto* jpeg    = (uint8_t*) heap_caps_malloc(JPEG_BUF_SIZE,                         MALLOC_CAP_SPIRAM);
     auto* body    = (char*)    heap_caps_malloc(BODY_CAP,                               MALLOC_CAP_SPIRAM);
@@ -70,7 +70,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     if (sample_count > (uint8_t)total) sample_count = (uint8_t)total;
 
     size_t pos = (size_t)snprintf(body, BODY_CAP,
-        "{\"model\":\"%s\",\"max_tokens\":256,"
+        "{\"model\":\"%s\",\"max_tokens\":512,"
         "\"messages\":[{\"role\":\"user\",\"content\":[",
         CLAUDE_MODEL);
 
@@ -108,7 +108,11 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
 
     pos += (size_t)snprintf(body + pos, BODY_CAP - pos,
         "%s{\"type\":\"text\",\"text\":"
-        "\"Describe concisely what is happening across these frames.\"}]"
+        "\"Analyse these frames and respond with ONLY valid JSON in this exact format: "
+        "{\\\"description\\\": \\\"brief scene description\\\", "
+        "\\\"plates\\\": [\\\"plate1\\\", \\\"plate2\\\"]}. "
+        "The plates array should contain any UK or Irish vehicle registration plates "
+        "you can read clearly. If no plates are visible use an empty array.\"}]"
         "}]}",
         first ? "" : ",");
 
@@ -173,8 +177,25 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         return false;
     }
 
+    // Claude's response text is itself JSON: {"description": "...", "plates": [...]}
     JsonDocument res;
     if (deserializeJson(res, resp)) { Serial.println("claude: JSON parse failed"); return false; }
-    out = res["content"][0]["text"] | "";
+    String text = res["content"][0]["text"] | "";
+    if (!text.length()) return false;
+
+    JsonDocument inner;
+    if (deserializeJson(inner, text)) {
+        // Fallback: treat the whole text as the description
+        out = text;
+        plates = "";
+        return true;
+    }
+    out = inner["description"] | text;
+    plates = "";
+    JsonArray arr = inner["plates"].as<JsonArray>();
+    for (JsonVariant p : arr) {
+        if (plates.length()) plates += ", ";
+        plates += p.as<String>();
+    }
     return out.length() > 0;
 }
