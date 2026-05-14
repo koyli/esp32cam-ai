@@ -11,7 +11,11 @@ public:
     static constexpr int GH = 12;
 
     explicit MotionDetector(uint8_t threshold_pct);
-    bool update(const camera_fb_t* fb);
+    // Returns number of changed cells, or -1 on decode error.
+    // Triggers motion when changed cells >= threshold.
+    int update(const camera_fb_t* fb);
+    bool triggered(int changed_cells) const;
+    int thresholdCells() const { return (GW * GH * threshold_pct_) / 100; }
 
 private:
     uint8_t threshold_pct_;

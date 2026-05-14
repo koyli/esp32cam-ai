@@ -51,7 +51,7 @@ MotionDetector::MotionDetector(uint8_t threshold_pct)
     memset(prev_, 0, sizeof(prev_));
 }
 
-bool MotionDetector::update(const camera_fb_t* fb) {
+int MotionDetector::update(const camera_fb_t* fb) {
     DecodeCtx ctx = {};
     ctx.src     = fb->buf;
     ctx.src_len = fb->len;
@@ -59,7 +59,7 @@ bool MotionDetector::update(const camera_fb_t* fb) {
     ctx.img_h   = (uint16_t)fb->height;
 
     if (esp_jpg_decode(fb->len, JPG_SCALE_8X, jpegReader, jpegWriter, &ctx) != ESP_OK) {
-        return false;
+        return -1;
     }
 
     uint8_t cur[GW * GH];
@@ -70,7 +70,7 @@ bool MotionDetector::update(const camera_fb_t* fb) {
     if (!has_prev_) {
         memcpy(prev_, cur, sizeof(cur));
         has_prev_ = true;
-        return false;
+        return 0;
     }
 
     int changed = 0;
@@ -80,7 +80,9 @@ bool MotionDetector::update(const camera_fb_t* fb) {
         if (diff > LUMA_STEP) changed++;
     }
     memcpy(prev_, cur, sizeof(cur));
+    return changed;
+}
 
-    int threshold_cells = (GW * GH * threshold_pct_) / 100;
-    return changed >= threshold_cells;
+bool MotionDetector::triggered(int changed_cells) const {
+    return changed_cells >= thresholdCells();
 }

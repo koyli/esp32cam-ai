@@ -99,6 +99,9 @@ void setup() {
         Serial.println("wifi connect failed (continuing)");
     }
     mqtt.begin();
+
+    Serial.println("boot: recording startup clip");
+    recordClip(nullptr);
 }
 
 void loop() {
@@ -107,10 +110,26 @@ void loop() {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { delay(10); return; }
 
-    bool moved = motion.update(fb);
+    static uint32_t last_heartbeat = 0;
+    static uint32_t frame_count = 0;
+    static int      peak_changed = 0;
+
+    frame_count++;
+    int changed = motion.update(fb);
+    if (changed > peak_changed) peak_changed = changed;
+
+    uint32_t now = millis();
+    if (now - last_heartbeat >= 10000) {
+        Serial.printf("status: %lu frames, peak changed %d/%d cells, heap %lu\n",
+                      frame_count, peak_changed, motion.thresholdCells(),
+                      (unsigned long)ESP.getFreeHeap());
+        peak_changed = 0;
+        last_heartbeat = now;
+    }
+
     ring.push(fb);
 
-    if (moved) {
+    if (motion.triggered(changed)) {
         recordClip(fb);
     }
 
