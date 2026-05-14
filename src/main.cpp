@@ -72,7 +72,11 @@ static bool initWifi() {
     while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
         delay(250);
     }
-    return WiFi.status() == WL_CONNECTED;
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("wifi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+        return true;
+    }
+    return false;
 }
 
 static void recordClip(const camera_fb_t* trigger_fb);
@@ -119,6 +123,7 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
     char avi_path[64];
     snprintf(avi_path, sizeof(avi_path), "%s/clip_%lu.avi",
              SD_RECORDINGS_DIR, (unsigned long)millis());
+    Serial.printf("motion: recording %s\n", avi_path);
 
     AviWriter w;
     if (!w.begin(avi_path, 640, 480, 10)) return;
@@ -144,5 +149,8 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
     File t = SD_MMC.open(txt_path, FILE_WRITE);
     if (t) { t.print(summary); t.close(); }
 
-    mqtt.publish(MQTT_TOPIC, summary.c_str());
+    Serial.printf("summary: %s\n", summary.c_str());
+    Serial.printf("motion: publishing to %s\n", MQTT_TOPIC);
+    bool ok = mqtt.publish(MQTT_TOPIC, summary.c_str());
+    Serial.printf("motion: publish %s\n", ok ? "ok" : "failed");
 }

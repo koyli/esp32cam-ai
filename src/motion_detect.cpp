@@ -18,7 +18,7 @@ static size_t jpegReader(void* arg, size_t index, uint8_t* buf, size_t len) {
     if (index >= ctx->src_len) return 0;
     size_t n = ctx->src_len - index;
     if (n > len) n = len;
-    memcpy(buf, ctx->src + index, n);
+    if (buf) memcpy(buf, ctx->src + index, n);
     return n;
 }
 
