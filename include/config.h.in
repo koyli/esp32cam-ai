@@ -22,8 +22,9 @@ static const WifiCred WIFI_CREDS[] = {
 // ---------------- Claude API -----------
 #define CLAUDE_API_HOST   "api.anthropic.com"
 #define CLAUDE_API_PATH   "/v1/messages"
-#define CLAUDE_API_KEY    "sk-ant-REPLACE_ME"
-#define CLAUDE_MODEL      "claude-opus-4-7"
+#define CLAUDE_API_KEY      "sk-ant-REPLACE_ME"
+#define CLAUDE_MODEL        "claude-sonnet-4-6"
+#define CLAUDE_PLATES_MODEL "claude-haiku-4-5-20251001"
 
 // ---------------- Capture --------------
 // Ring buffer holds the most recent PRE_FRAMES; on a motion trigger we also
