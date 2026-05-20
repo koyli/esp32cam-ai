@@ -55,8 +55,9 @@ int MotionDetector::update(const camera_fb_t* fb) {
     DecodeCtx ctx = {};
     ctx.src     = fb->buf;
     ctx.src_len = fb->len;
-    ctx.img_w   = (uint16_t)fb->width;
-    ctx.img_h   = (uint16_t)fb->height;
+    // JPG_SCALE_8X decodes at 1/8 size; callback coordinates are in decoded space
+    ctx.img_w   = (uint16_t)(fb->width  >> 3);
+    ctx.img_h   = (uint16_t)(fb->height >> 3);
 
     if (esp_jpg_decode(fb->len, JPG_SCALE_8X, jpegReader, jpegWriter, &ctx) != ESP_OK) {
         return -1;
