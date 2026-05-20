@@ -6,7 +6,6 @@
 #include <SD_MMC.h>
 #include <mbedtls/base64.h>
 #include <esp_heap_caps.h>
-#include <img_converters.h>
 
 // Matches the exact layout produced by AviWriter: 12 (RIFF) + 200 (LIST hdrl) + 12 (LIST movi).
 static constexpr uint32_t MOVI_DATA_OFFSET = 224;
@@ -14,7 +13,6 @@ static constexpr uint32_t MOVI_DATA_OFFSET = 224;
 static constexpr size_t MAX_FRAME_SLOTS = 96;
 static constexpr size_t JPEG_BUF_SIZE   = 60 * 1024;
 static constexpr size_t BODY_CAP        = 512 * 1024;
-static constexpr size_t QVGA_RGB_SIZE   = 320 * 240 * 2;  // RGB565 at half VGA scale
 
 struct ChunkInfo { uint32_t data_offset; uint32_t size; };
 
@@ -43,24 +41,16 @@ static size_t frameIndex(uint8_t i, uint8_t sample_count, size_t total) {
     return (size_t)i * (total - 1) / (sample_count - 1);
 }
 
-// Decode a VGA JPEG at 1/2 scale and re-encode as a QVGA JPEG.
-// Returns a malloc'd buffer (caller must free()); nullptr on failure.
-// Falls back to nullptr silently so the caller can send the original VGA frame.
-static uint8_t* toQvgaJpeg(const uint8_t* src, size_t src_len, size_t& out_len) {
-    auto* rgb = (uint8_t*)heap_caps_malloc(QVGA_RGB_SIZE, MALLOC_CAP_SPIRAM);
-    if (!rgb) return nullptr;
 
-    if (!jpg2rgb565(src, src_len, rgb, JPG_SCALE_2X)) {
-        heap_caps_free(rgb); return nullptr;
+static void stripCodeFence(String& s) {
+    s.trim();
+    if (s.startsWith("```")) {
+        int nl = s.indexOf('\n');
+        if (nl >= 0) s = s.substring(nl + 1);
+        s.trim();
+        if (s.endsWith("```")) s = s.substring(0, s.length() - 3);
+        s.trim();
     }
-
-    uint8_t* out = nullptr;
-    out_len = 0;
-    if (!fmt2jpg(rgb, QVGA_RGB_SIZE, 320, 240, PIXFORMAT_RGB565, 12, &out, &out_len)) {
-        heap_caps_free(rgb); return nullptr;
-    }
-    heap_caps_free(rgb);
-    return out;
 }
 
 static bool vehicleInScene(const String& desc) {
@@ -162,7 +152,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     if (sample_count > (uint8_t)total) sample_count = (uint8_t)total;
     uint8_t mid_sample = sample_count / 2;
 
-    // --- Build scene-analysis request (QVGA frames → Sonnet) ---
+    // --- Build scene-analysis request (VGA frames → Sonnet) ---
     size_t pos = (size_t)snprintf(body, BODY_CAP,
         "{\"model\":\"%s\",\"max_tokens\":512,"
         "\"messages\":[{\"role\":\"user\",\"content\":[",
@@ -175,27 +165,20 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         if (!f.seek(ci.data_offset)) continue;
         if ((size_t)f.read(jpeg, ci.size) != ci.size) continue;
 
-        // Save the middle sampled frame at full VGA for the plate-reading call.
+        // Save the middle sampled frame for the plate-reading call.
         if (i == mid_sample) {
             memcpy(vga_plate, jpeg, ci.size);
             vga_plate_len = ci.size;
         }
 
-        // Downsample to QVGA; fall back to VGA if downsampling fails.
-        size_t send_len = ci.size;
-        uint8_t* qvga = toQvgaJpeg(jpeg, ci.size, send_len);
-        const uint8_t* send_jpeg = qvga ? qvga : jpeg;
-        if (!qvga) send_len = ci.size;
-
-        size_t b64_cap = ((send_len + 2) / 3) * 4 + 1;
+        size_t b64_cap = ((ci.size + 2) / 3) * 4 + 1;
         auto* b64 = (char*)heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM);
-        if (!b64) { if (qvga) free(qvga); continue; }
+        if (!b64) continue;
         size_t b64_len = 0;
-        if (mbedtls_base64_encode((unsigned char*)b64, b64_cap, &b64_len, send_jpeg, send_len) != 0) {
-            heap_caps_free(b64); if (qvga) free(qvga); continue;
+        if (mbedtls_base64_encode((unsigned char*)b64, b64_cap, &b64_len, jpeg, ci.size) != 0) {
+            heap_caps_free(b64); continue;
         }
         b64[b64_len] = '\0';
-        if (qvga) free(qvga);
 
         if (!first && pos < BODY_CAP - 1) body[pos++] = ',';
         first = false;
@@ -240,13 +223,15 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         return false;
     }
 
+    stripCodeFence(text);
     JsonDocument inner;
     if (deserializeJson(inner, text)) {
         out = text; plates = "";
         heap_caps_free(body); heap_caps_free(vga_plate);
         return true;
     }
-    out = inner["description"] | text;
+    out = text;  // full clean JSON for MQTT
+    String scene_desc = inner["description"] | String("");
     plates = "";
     JsonArray arr = inner["plates"].as<JsonArray>();
     for (JsonVariant p : arr) {
@@ -255,7 +240,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     }
 
     // --- Plate-reading call when a vehicle is present (VGA frame → Haiku) ---
-    if (vehicleInScene(out) && vga_plate_len > 0) {
+    if (vehicleInScene(scene_desc) && vga_plate_len > 0) {
         Serial.println("claude: vehicle detected, running VGA plate-reading call");
 
         size_t b64_cap = ((vga_plate_len + 2) / 3) * 4 + 1;
@@ -282,6 +267,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                     JsonDocument pres;
                     if (!deserializeJson(pres, plate_resp)) {
                         String ptext = pres["content"][0]["text"] | "";
+                        stripCodeFence(ptext);
                         JsonDocument pinner;
                         if (!deserializeJson(pinner, ptext)) {
                             String vga_plates;
@@ -290,7 +276,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                                 if (vga_plates.length()) vga_plates += ", ";
                                 vga_plates += p.as<String>();
                             }
-                            // VGA result supersedes the QVGA estimate from Sonnet.
+                            // Haiku result on the dedicated mid-frame supersedes Sonnet estimate.
                             plates = vga_plates;
                             if (plates.length())
                                 Serial.printf("claude: plates (VGA): %s\n", plates.c_str());
