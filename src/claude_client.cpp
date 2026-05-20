@@ -52,16 +52,6 @@ static void stripCodeFence(String& s) {
     }
 }
 
-static bool vehicleInScene(const String& desc) {
-    String s = desc; s.toLowerCase();
-    const char* kw[] = {
-        "car", "vehicle", "truck", "van", "bus", "lorry",
-        "motorbike", "motorcycle", "suv", "4x4", nullptr
-    };
-    for (int i = 0; kw[i]; ++i)
-        if (s.indexOf(kw[i]) >= 0) return true;
-    return false;
-}
 
 // Shared HTTP/TLS send+receive logic — body is in PSRAM, chunked into DRAM for DMA.
 static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, String& resp) {
@@ -237,7 +227,10 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     const char* scene_prompt =
         "Analyse these frames and respond with ONLY valid JSON in this exact format: "
         "{\\\"description\\\": \\\"brief scene description\\\", "
+        "\\\"has_vehicle\\\": true, "
         "\\\"plates\\\": [\\\"plate1\\\", \\\"plate2\\\"]}. "
+        "Set has_vehicle to true only if a vehicle (car, van, truck, bus, motorbike etc) "
+        "is clearly present. "
         "The plates array should contain any UK or Irish vehicle registration plates "
         "you can read clearly. If no plates are visible use an empty array.";
 
@@ -285,7 +278,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         return true;
     }
     out = text;
-    String scene_desc = inner["description"] | String("");
+    bool has_vehicle = inner["has_vehicle"] | false;
     plates = "";
     JsonArray arr = inner["plates"].as<JsonArray>();
     for (JsonVariant p : arr) {
@@ -294,7 +287,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     }
 
     // --- Plate-reading call when a vehicle is present ---
-    if (vehicleInScene(scene_desc) && vga_plate_len > 0) {
+    if (has_vehicle && vga_plate_len > 0) {
         Serial.println("ai: vehicle detected, running VGA plate-reading call");
 
         size_t b64_cap = ((vga_plate_len + 2) / 3) * 4 + 1;

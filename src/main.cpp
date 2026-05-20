@@ -160,7 +160,7 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
 
     String summary, plates;
     if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
-        summary = "(claude summary unavailable)";
+        summary = "{\"description\":\"(ai summary unavailable)\",\"has_vehicle\":false,\"plates\":[]}";
     }
 
     char txt_path[80];
