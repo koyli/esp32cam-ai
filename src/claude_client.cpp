@@ -138,6 +138,17 @@ static int aiPost(const char* model, const char* body, size_t body_len, String& 
 
 #endif // USE_GEMINI
 
+// Retry once on any non-200 response or empty body.
+static int aiPostWithRetry(const char* model, const char* body, size_t body_len, String& resp) {
+    int code = aiPost(model, body, body_len, resp);
+    if (code != 200 || !resp.length()) {
+        Serial.println("ai: retrying...");
+        resp = "";
+        code = aiPost(model, body, body_len, resp);
+    }
+    return code;
+}
+
 // Extract the text content from the API response JSON.
 static String extractText(JsonDocument& doc) {
 #ifdef USE_GEMINI
@@ -249,7 +260,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         first ? "" : ",", scene_prompt);
 
     String resp;
-    int code = aiPost(GEMINI_MODEL, body, pos, resp);
+    int code = aiPostWithRetry(GEMINI_MODEL, body, pos, resp);
 #else
     pos += (size_t)snprintf(body + pos, BODY_CAP - pos,
         "%s{\"type\":\"text\",\"text\":\"%s\"}]"
@@ -257,7 +268,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         first ? "" : ",", scene_prompt);
 
     String resp;
-    int code = aiPost(CLAUDE_MODEL, body, pos, resp);
+    int code = aiPostWithRetry(CLAUDE_MODEL, body, pos, resp);
 #endif
 
     if (code != 200) {
@@ -319,7 +330,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                     b64, plate_prompt);
 
                 String plate_resp;
-                if (aiPost(GEMINI_PLATES_MODEL, body, pos, plate_resp) == 200) {
+                if (aiPostWithRetry(GEMINI_PLATES_MODEL, body, pos, plate_resp) == 200) {
 #else
                 pos = (size_t)snprintf(body, BODY_CAP,
                     "{\"model\":\"%s\",\"max_tokens\":128,"
@@ -332,7 +343,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                     CLAUDE_PLATES_MODEL, b64, plate_prompt);
 
                 String plate_resp;
-                if (aiPost(CLAUDE_PLATES_MODEL, body, pos, plate_resp) == 200) {
+                if (aiPostWithRetry(CLAUDE_PLATES_MODEL, body, pos, plate_resp) == 200) {
 #endif
                     JsonDocument pres;
                     if (!deserializeJson(pres, plate_resp)) {
@@ -346,9 +357,12 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                                 if (vga_plates.length()) vga_plates += ", ";
                                 vga_plates += p.as<String>();
                             }
-                            plates = vga_plates;
-                            if (plates.length())
+                            if (vga_plates.length()) {
+                                plates = vga_plates;
                                 Serial.printf("ai: plates (VGA): %s\n", plates.c_str());
+                            } else {
+                                Serial.println("ai: plate call returned no results, keeping scene analysis plates");
+                            }
                         }
                     }
                 }
