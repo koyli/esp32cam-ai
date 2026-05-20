@@ -19,12 +19,21 @@ static const WifiCred WIFI_CREDS[] = {
 #define MQTT_PLATES_TOPIC "esp32cam-ai/plates"
 #define MQTT_CLIENT_ID  "esp32cam-ai"
 
-// ---------------- Claude API -----------
-#define CLAUDE_API_HOST   "api.anthropic.com"
-#define CLAUDE_API_PATH   "/v1/messages"
-#define CLAUDE_API_KEY      "sk-ant-REPLACE_ME"
-#define CLAUDE_MODEL        "claude-sonnet-4-6"
-#define CLAUDE_PLATES_MODEL "claude-haiku-4-5-20251001"
+// ---------------- AI backend -----------
+// Comment out USE_GEMINI to switch back to Claude.
+#define USE_GEMINI
+
+#ifdef USE_GEMINI
+#define GEMINI_API_KEY        "REPLACE_ME"
+#define GEMINI_MODEL          "gemini-2.0-flash"
+#define GEMINI_PLATES_MODEL   "gemini-2.0-flash-lite"
+#else
+#define CLAUDE_API_HOST       "api.anthropic.com"
+#define CLAUDE_API_PATH       "/v1/messages"
+#define CLAUDE_API_KEY        "sk-ant-REPLACE_ME"
+#define CLAUDE_MODEL          "claude-sonnet-4-6"
+#define CLAUDE_PLATES_MODEL   "claude-haiku-4-5-20251001"
+#endif
 
 // ---------------- Capture --------------
 // Ring buffer holds the most recent PRE_FRAMES; on a motion trigger we also
@@ -32,7 +41,7 @@ static const WifiCred WIFI_CREDS[] = {
 #define PRE_FRAMES        30
 #define POST_FRAMES       60
 
-// Frames sampled (evenly) from each AVI for the Claude API call.
+// Frames sampled (evenly) from each AVI for the AI API call.
 #define CLAUDE_SAMPLE_FRAMES  4
 
 // Motion detection: pixel-difference threshold as a percentage of the frame.
