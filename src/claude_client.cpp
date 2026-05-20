@@ -69,20 +69,22 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
     free(chunk);
     Serial.printf("ai: sent %u/%u bytes\n", (unsigned)sent, (unsigned)body_len);
 
+    // Wait for first byte with timeout.
     uint32_t t0 = millis();
     while (!tls.available() && millis() - t0 < 30000) delay(10);
     String status = tls.readStringUntil('\n'); status.trim();
     Serial.println("ai: " + status);
     int code = status.length() >= 12 ? status.substring(9, 12).toInt() : 0;
 
+    // Consume headers.
     while (tls.connected() || tls.available()) {
         String line = tls.readStringUntil('\n'); line.trim();
         if (!line.length()) break;
     }
-    t0 = millis();
-    while ((tls.connected() || tls.available()) && millis() - t0 < 30000) {
-        while (tls.available()) resp += (char)tls.read();
-        delay(1);
+    // Drain body — exit only when both connected and available are false so we
+    // don't truncate on the HTTP/1.0 EOF close-to-signal-end-of-body.
+    while (tls.connected() || tls.available()) {
+        if (tls.available()) resp += (char)tls.read();
     }
     tls.stop();
     return code;
@@ -273,9 +275,9 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     stripCodeFence(text);
     JsonDocument inner;
     if (deserializeJson(inner, text)) {
-        out = text; plates = "";
+        Serial.println("ai: inner JSON parse failed");
         heap_caps_free(body); heap_caps_free(vga_plate);
-        return true;
+        return false;
     }
     out = text;
     bool has_vehicle = inner["has_vehicle"] | false;
