@@ -81,10 +81,16 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
         String line = tls.readStringUntil('\n'); line.trim();
         if (!line.length()) break;
     }
-    // Drain body — exit only when both connected and available are false so we
-    // don't truncate on the HTTP/1.0 EOF close-to-signal-end-of-body.
-    while (tls.connected() || tls.available()) {
-        if (tls.available()) resp += (char)tls.read();
+    // Drain body until 500ms of silence — more reliable than connected()/available()
+    // flags on ESP32, which can both drop before the last bytes are buffered.
+    uint32_t idle = millis();
+    while (millis() - idle < 500) {
+        if (tls.available()) {
+            resp += (char)tls.read();
+            idle = millis();
+        } else {
+            delay(1);
+        }
     }
     tls.stop();
     return code;
