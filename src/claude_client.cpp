@@ -103,30 +103,8 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
 
 // --- Backend-specific POST ---
 
-#ifdef USE_GEMINI
-
-static int aiPost(const char* model, const char* body, size_t body_len, String& resp) {
-    WiFiClientSecure tls;
-    tls.setInsecure();
-    tls.setTimeout(10000);
-    if (!tls.connect("generativelanguage.googleapis.com", 443)) {
-        Serial.println("ai: TLS connect failed");
-        return 0;
-    }
-    char path[256];
-    snprintf(path, sizeof(path),
-        "/v1beta/models/%s:generateContent?key=%s", model, GEMINI_API_KEY);
-    tls.printf("POST %s HTTP/1.0\r\n", path);
-    tls.printf("Host: generativelanguage.googleapis.com\r\n");
-    tls.printf("Content-Type: application/json\r\n");
-    tls.printf("Content-Length: %u\r\n\r\n", (unsigned)body_len);
-    return tlsPost(tls, body, body_len, resp);
-}
-
-#else // Claude
-
-static int aiPost(const char* model, const char* body, size_t body_len, String& resp) {
-    (void)model; // already embedded in body for Claude
+// Claude — always compiled (primary or fallback depending on USE_GEMINI).
+static int claudePost(const char* /*model*/, const char* body, size_t body_len, String& resp) {
     WiFiClientSecure tls;
     tls.setInsecure();
     tls.setTimeout(10000);
@@ -143,7 +121,33 @@ static int aiPost(const char* model, const char* body, size_t body_len, String& 
     return tlsPost(tls, body, body_len, resp);
 }
 
-#endif // USE_GEMINI
+#ifdef USE_GEMINI
+static int geminiPost(const char* model, const char* body, size_t body_len, String& resp) {
+    WiFiClientSecure tls;
+    tls.setInsecure();
+    tls.setTimeout(10000);
+    if (!tls.connect("generativelanguage.googleapis.com", 443)) {
+        Serial.println("ai: TLS connect failed");
+        return 0;
+    }
+    char path[256];
+    snprintf(path, sizeof(path),
+        "/v1beta/models/%s:generateContent?key=%s", model, GEMINI_API_KEY);
+    tls.printf("POST %s HTTP/1.0\r\n", path);
+    tls.printf("Host: generativelanguage.googleapis.com\r\n");
+    tls.printf("Content-Type: application/json\r\n");
+    tls.printf("Content-Length: %u\r\n\r\n", (unsigned)body_len);
+    return tlsPost(tls, body, body_len, resp);
+}
+#endif
+
+static int aiPost(const char* model, const char* body, size_t body_len, String& resp) {
+#ifdef USE_GEMINI
+    return geminiPost(model, body, body_len, resp);
+#else
+    return claudePost(model, body, body_len, resp);
+#endif
+}
 
 // Retry once on any non-200 response or empty body.
 static int aiPostWithRetry(const char* model, const char* body, size_t body_len, String& resp) {
@@ -163,6 +167,10 @@ static String extractText(JsonDocument& doc) {
 #else
     return doc["content"][0]["text"] | "";
 #endif
+}
+
+static String extractClaudeText(JsonDocument& doc) {
+    return doc["content"][0]["text"] | "";
 }
 
 bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String& out, String& plates) {
@@ -276,6 +284,71 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
 
     String resp;
     int code = aiPostWithRetry(CLAUDE_MODEL, body, pos, resp);
+#endif
+
+#ifdef USE_GEMINI
+    // Fallback: if Gemini failed, try Claude Haiku with the mid-frame.
+    if (code != 200 || !resp.length()) {
+        Serial.println("ai: Gemini failed, falling back to Claude Haiku");
+        resp = "";
+        if (vga_plate_len > 0) {
+            size_t fb64_cap = ((vga_plate_len + 2) / 3) * 4 + 1;
+            auto* fb64 = (char*)heap_caps_malloc(fb64_cap, MALLOC_CAP_SPIRAM);
+            if (fb64) {
+                size_t fb64_len = 0;
+                if (mbedtls_base64_encode((unsigned char*)fb64, fb64_cap, &fb64_len,
+                                          vga_plate, vga_plate_len) == 0) {
+                    fb64[fb64_len] = '\0';
+                    pos = (size_t)snprintf(body, BODY_CAP,
+                        "{\"model\":\"%s\",\"max_tokens\":512,"
+                        "\"messages\":[{\"role\":\"user\",\"content\":["
+                        "{\"type\":\"image\",\"source\":{"
+                        "\"type\":\"base64\","
+                        "\"media_type\":\"image/jpeg\","
+                        "\"data\":\"%s\"}},"
+                        "{\"type\":\"text\",\"text\":\"%s\"}]}"
+                        "]}",
+                        CLAUDE_HAIKU_MODEL, fb64, scene_prompt);
+                    code = claudePost(CLAUDE_HAIKU_MODEL, body, pos, resp);
+                    if (code != 200 || !resp.length()) {
+                        Serial.printf("ai: Claude Haiku fallback failed (%d)\n", code);
+                        heap_caps_free(fb64);
+                        heap_caps_free(body); heap_caps_free(vga_plate);
+                        return false;
+                    }
+                    // Parse as Claude response and return early (no plate call for fallback).
+                    JsonDocument fres;
+                    if (deserializeJson(fres, resp)) {
+                        Serial.println("ai: haiku JSON parse failed");
+                        heap_caps_free(fb64);
+                        heap_caps_free(body); heap_caps_free(vga_plate);
+                        return false;
+                    }
+                    String ftext = extractClaudeText(fres);
+                    stripCodeFence(ftext);
+                    JsonDocument finner;
+                    if (deserializeJson(finner, ftext)) {
+                        heap_caps_free(fb64);
+                        heap_caps_free(body); heap_caps_free(vga_plate);
+                        return false;
+                    }
+                    out = ftext;
+                    plates = "";
+                    JsonArray farr = finner["plates"].as<JsonArray>();
+                    for (JsonVariant p : farr) {
+                        if (plates.length()) plates += ", ";
+                        plates += p.as<String>();
+                    }
+                    heap_caps_free(fb64);
+                    heap_caps_free(body); heap_caps_free(vga_plate);
+                    return out.length() > 0;
+                }
+                heap_caps_free(fb64);
+            }
+        }
+        heap_caps_free(body); heap_caps_free(vga_plate);
+        return false;
+    }
 #endif
 
     if (code != 200) {
