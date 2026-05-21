@@ -160,7 +160,7 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
 
     String summary, plates;
     if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
-        summary = "{\"description\":\"(ai summary unavailable)\",\"has_vehicle\":false,\"plates\":[]}";
+        summary = "{\"description\":\"(ai summary unavailable)\",\"has_vehicle\":false,\"plates\":[]}"; // file injected below
     }
 
     char txt_path[80];
@@ -168,11 +168,14 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
     File t = SD_MMC.open(txt_path, FILE_WRITE);
     if (t) { t.print(summary); t.close(); }
 
-    Serial.printf("summary: %s\n", summary.c_str());
+    // Inject file path into the JSON object before publishing.
+    String payload = String("{\"file\":\"") + avi_path + "\"," + summary.substring(1);
+
+    Serial.printf("summary: %s\n", payload.c_str());
     if (plates.length()) Serial.printf("plates: %s\n", plates.c_str());
 
     Serial.printf("motion: publishing to %s\n", MQTT_TOPIC);
-    bool ok = mqtt.publish(MQTT_TOPIC, summary.c_str());
+    bool ok = mqtt.publish(MQTT_TOPIC, payload.c_str());
     Serial.printf("motion: publish %s\n", ok ? "ok" : "failed");
 
     if (plates.length()) {
