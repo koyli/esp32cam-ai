@@ -59,7 +59,12 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
     auto* chunk = (uint8_t*)malloc(CHUNK);
     if (!chunk) { tls.stop(); return 0; }
     size_t sent = 0;
+    uint32_t write_deadline = millis() + 30000;
     while (sent < body_len) {
+        if (millis() > write_deadline) {
+            Serial.println("ai: write timeout");
+            break;
+        }
         size_t n = body_len - sent; if (n > CHUNK) n = CHUNK;
         memcpy(chunk, body + sent, n);
         size_t w = tls.write(chunk, n);
@@ -103,6 +108,7 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
 static int aiPost(const char* model, const char* body, size_t body_len, String& resp) {
     WiFiClientSecure tls;
     tls.setInsecure();
+    tls.setTimeout(10000);
     if (!tls.connect("generativelanguage.googleapis.com", 443)) {
         Serial.println("ai: TLS connect failed");
         return 0;
@@ -123,6 +129,7 @@ static int aiPost(const char* model, const char* body, size_t body_len, String& 
     (void)model; // already embedded in body for Claude
     WiFiClientSecure tls;
     tls.setInsecure();
+    tls.setTimeout(10000);
     if (!tls.connect(CLAUDE_API_HOST, 443)) {
         Serial.println("ai: TLS connect failed");
         return 0;
