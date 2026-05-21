@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <SD_MMC.h>
 #include <esp_camera.h>
 
@@ -43,17 +44,20 @@ static bool initCamera() {
 }
 
 static bool initWifi() {
+    WiFi.persistent(false);       // don't save credentials to flash
+    WiFi.disconnect(true, true);  // disconnect and erase any stored AP
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
+    esp_wifi_set_ps(WIFI_PS_NONE); // disable power saving — improves association reliability
 
     int n = WiFi.scanNetworks();
     if (n <= 0) return false;
 
-    // Find the known network with the best RSSI.
+    // Find the known network with the best RSSI, saving BSSID+channel for direct connect.
     const WifiCred* best = nullptr;
-    int32_t  best_rssi    = INT32_MIN;
-    int32_t  best_channel = 0;
-    uint8_t  best_bssid[6] = {};
+    int32_t best_rssi    = INT32_MIN;
+    uint8_t best_bssid[6] = {};
+    uint8_t best_channel  = 0;
     static constexpr size_t CRED_COUNT = sizeof(WIFI_CREDS) / sizeof(WIFI_CREDS[0]);
 
     for (int i = 0; i < n; ++i) {
@@ -61,7 +65,7 @@ static bool initWifi() {
         for (size_t j = 0; j < CRED_COUNT; ++j) {
             if (found == WIFI_CREDS[j].ssid && WiFi.RSSI(i) > best_rssi) {
                 best_rssi    = WiFi.RSSI(i);
-                best_channel = WiFi.channel(i);
+                best_channel = (uint8_t)WiFi.channel(i);
                 memcpy(best_bssid, WiFi.BSSID(i), 6);
                 best = &WIFI_CREDS[j];
             }
@@ -71,16 +75,34 @@ static bool initWifi() {
 
     if (!best) return false;
 
+    // Give the radio a moment to exit scan mode.
+    delay(200);
+
     Serial.printf("wifi: connecting to %s ch%d (%d dBm)\n", best->ssid, best_channel, best_rssi);
-    // Pass BSSID+channel so the driver connects directly without a second scan.
-    WiFi.begin(best->ssid, best->pass, best_channel, best_bssid);
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-        delay(250);
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("wifi: connected, IP %s\n", WiFi.localIP().toString().c_str());
-        return true;
+
+    // Use esp_wifi directly with BSSID+channel so the driver associates without
+    // a second internal scan — that second scan is what was producing NO_AP_FOUND.
+    wifi_config_t cfg = {};
+    strlcpy((char*)cfg.sta.ssid,     best->ssid, sizeof(cfg.sta.ssid));
+    strlcpy((char*)cfg.sta.password, best->pass, sizeof(cfg.sta.password));
+    cfg.sta.channel   = best_channel;
+    cfg.sta.bssid_set = 1;
+    memcpy(cfg.sta.bssid, best_bssid, 6);
+
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        esp_wifi_connect();
+        uint32_t start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+            delay(250);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("wifi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+            return true;
+        }
+        Serial.printf("wifi: attempt %d failed (status %d), retrying\n", attempt, WiFi.status());
+        esp_wifi_disconnect();
+        delay(500);
     }
     return false;
 }
