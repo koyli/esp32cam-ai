@@ -2,7 +2,9 @@
 #include <esp_jpg_decode.h>
 #include <string.h>
 
-static constexpr uint8_t LUMA_STEP = 16;
+static constexpr uint8_t LUMA_STEP    = 16;
+static constexpr uint8_t MIN_LUMA     = 10;  // frames below this mean are treated as dark/invalid
+static constexpr uint8_t GLOBAL_SHIFT = 20;  // if mean luma shifts by more than this, likely auto-exposure
 
 struct DecodeCtx {
     const uint8_t* src;
@@ -68,9 +70,28 @@ int MotionDetector::update(const camera_fb_t* fb) {
         cur[i] = ctx.counts[i] ? (uint8_t)(ctx.sums[i] / ctx.counts[i]) : 0;
     }
 
+    // Compute mean luma of current frame.
+    uint32_t cur_sum = 0;
+    for (int i = 0; i < GW * GH; ++i) cur_sum += cur[i];
+    uint8_t cur_mean = (uint8_t)(cur_sum / (GW * GH));
+
+    // Reject dark frames — don't update prev_ so we compare against last valid frame.
+    if (cur_mean < MIN_LUMA) return 0;
+
     if (!has_prev_) {
         memcpy(prev_, cur, sizeof(cur));
         has_prev_ = true;
+        return 0;
+    }
+
+    // Reject global illumination shifts (auto-exposure jump).
+    uint32_t prev_sum = 0;
+    for (int i = 0; i < GW * GH; ++i) prev_sum += prev_[i];
+    uint8_t prev_mean = (uint8_t)(prev_sum / (GW * GH));
+    int global_shift = (int)cur_mean - (int)prev_mean;
+    if (global_shift < 0) global_shift = -global_shift;
+    if (global_shift > GLOBAL_SHIFT) {
+        memcpy(prev_, cur, sizeof(cur));
         return 0;
     }
 

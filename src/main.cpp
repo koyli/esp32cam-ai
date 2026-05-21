@@ -44,20 +44,25 @@ static bool initCamera() {
 
 static bool initWifi() {
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(false);
 
     int n = WiFi.scanNetworks();
     if (n <= 0) return false;
 
     // Find the known network with the best RSSI.
     const WifiCred* best = nullptr;
-    int32_t best_rssi = INT32_MIN;
+    int32_t  best_rssi    = INT32_MIN;
+    int32_t  best_channel = 0;
+    uint8_t  best_bssid[6] = {};
     static constexpr size_t CRED_COUNT = sizeof(WIFI_CREDS) / sizeof(WIFI_CREDS[0]);
 
     for (int i = 0; i < n; ++i) {
         String found = WiFi.SSID(i);
         for (size_t j = 0; j < CRED_COUNT; ++j) {
             if (found == WIFI_CREDS[j].ssid && WiFi.RSSI(i) > best_rssi) {
-                best_rssi = WiFi.RSSI(i);
+                best_rssi    = WiFi.RSSI(i);
+                best_channel = WiFi.channel(i);
+                memcpy(best_bssid, WiFi.BSSID(i), 6);
                 best = &WIFI_CREDS[j];
             }
         }
@@ -66,8 +71,9 @@ static bool initWifi() {
 
     if (!best) return false;
 
-    Serial.printf("wifi: connecting to %s (%d dBm)\n", best->ssid, best_rssi);
-    WiFi.begin(best->ssid, best->pass);
+    Serial.printf("wifi: connecting to %s ch%d (%d dBm)\n", best->ssid, best_channel, best_rssi);
+    // Pass BSSID+channel so the driver connects directly without a second scan.
+    WiFi.begin(best->ssid, best->pass, best_channel, best_bssid);
     uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
         delay(250);
