@@ -81,6 +81,12 @@ static bool initWifi() {
 
 static void recordClip(const camera_fb_t* trigger_fb);
 
+static bool ensureWifi() {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    Serial.println("wifi: disconnected, attempting reconnect");
+    return initWifi();
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\nesp32cam-ai boot");
@@ -157,6 +163,8 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
         esp_camera_fb_return(f);
     }
     w.end();
+
+    ensureWifi();
 
     String summary, plates;
     if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
