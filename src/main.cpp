@@ -90,6 +90,13 @@ static bool initWifi() {
     memcpy(cfg.sta.bssid, best_bssid, 6);
 
     for (int attempt = 1; attempt <= 3; ++attempt) {
+        // Full stack reset before each attempt flushes the PMKSA cache and clears
+        // any stale 802.11 auth state that causes AUTH_EXPIRE on the AP side.
+        esp_wifi_stop();
+        delay(300);
+        esp_wifi_start();
+        delay(300);
+
         esp_wifi_set_config(WIFI_IF_STA, &cfg);
         esp_wifi_connect();
         uint32_t start = millis();
@@ -102,7 +109,7 @@ static bool initWifi() {
         }
         Serial.printf("wifi: attempt %d failed (status %d), retrying\n", attempt, WiFi.status());
         esp_wifi_disconnect();
-        delay(500);
+        delay(1000);
     }
     return false;
 }
