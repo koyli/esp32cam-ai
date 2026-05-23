@@ -1,0 +1,13 @@
+[Unit]
+Description=ESP32 upload receiver
+After=network.target
+
+[Service]
+User=ubuntu
+Environment=UPLOAD_DIR=/home/ubuntu/recordings
+ExecStart=/usr/bin/python3 /home/ubuntu/server/upload_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

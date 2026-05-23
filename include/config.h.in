@@ -55,3 +55,10 @@ static const WifiCred WIFI_CREDS[] = {
 
 // SD card path for recordings and summaries.
 #define SD_RECORDINGS_DIR     "/recordings"
+
+// ---------------- Cloud upload -----------
+// Hostname of your OCI upload receiver (no https:// prefix).
+// Set UPLOAD_TOKEN to the same secret configured in nginx.
+#define UPLOAD_HOST   "your-oci-hostname.example.com"
+#define UPLOAD_PORT   443
+#define UPLOAD_TOKEN  "REPLACE_ME"

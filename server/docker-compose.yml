@@ -1,0 +1,20 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx-upload.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - upload_server
+    restart: unless-stopped
+
+  upload_server:
+    build: .
+    volumes:
+      - /home/ubuntu/recordings:/recordings
+    environment:
+      - UPLOAD_DIR=/recordings
+    restart: unless-stopped

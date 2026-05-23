@@ -11,6 +11,7 @@
 #include "avi_writer.h"
 #include "claude_client.h"
 #include "mqtt_publisher.h"
+#include "upload_client.h"
 
 static JpegRingBuffer ring(PRE_FRAMES);
 static MotionDetector motion(MOTION_THRESHOLD_PCT);
@@ -225,4 +226,7 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
         Serial.printf("motion: publishing plates to %s\n", MQTT_PLATES_TOPIC);
         mqtt.publish(MQTT_PLATES_TOPIC, plates.c_str());
     }
+
+    uploadFile(avi_path);
+    uploadFile(txt_path);
 }
