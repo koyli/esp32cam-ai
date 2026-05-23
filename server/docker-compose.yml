@@ -13,7 +13,7 @@ services:
 
   upload_server:
     build: .
-    user: "1000:1000"
+    user: "1001:1001"
     volumes:
       - /home/ubuntu/recordings:/recordings
     environment:
