@@ -9,7 +9,7 @@ from flask import Flask, request
 app = Flask(__name__)
 
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/home/ubuntu/recordings")
-_SAFE_NAME = re.compile(r'^[\w\-]+\.(avi|txt)$')
+_SAFE_NAME = re.compile(r'^[\w\.\-]+\.(avi|txt)$')
 
 
 @app.route("/upload", methods=["POST"])
