@@ -3,6 +3,8 @@
 #include <esp_wifi.h>
 #include <SD_MMC.h>
 #include <esp_camera.h>
+#include <Preferences.h>
+#include <time.h>
 
 #include "config.h"
 #include "camera_pins.h"
@@ -17,6 +19,62 @@ static JpegRingBuffer ring(PRE_FRAMES);
 static MotionDetector motion(MOTION_THRESHOLD_PCT);
 static MqttPublisher  mqtt;
 static ClaudeClient   claude;
+
+static char     device_id[5];  // 4 hex chars derived from the factory MAC
+static uint32_t boot_count;    // persisted in NVS; disambiguates clips when NTP is unavailable
+
+// CRC-16/CCITT of the factory MAC, so filenames from different devices don't
+// collide when they land in the same upload directory.
+static void initDeviceId() {
+    uint64_t mac = ESP.getEfuseMac();
+    uint16_t crc = 0xFFFF;
+    for (int i = 0; i < 6; ++i) {
+        crc ^= (uint16_t)((mac >> (8 * i)) & 0xFF) << 8;
+        for (int b = 0; b < 8; ++b) {
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+        }
+    }
+    snprintf(device_id, sizeof(device_id), "%04X", crc);
+
+    Preferences prefs;
+    prefs.begin("esp32cam-ai", false);
+    boot_count = prefs.getUInt("boots", 0) + 1;
+    prefs.putUInt("boots", boot_count);
+    prefs.end();
+}
+
+static bool timeValid() {
+    return time(nullptr) > 1700000000;  // anything before Nov 2023 means SNTP hasn't synced
+}
+
+// Starts SNTP (it keeps re-syncing in the background) and waits briefly for a first sync.
+static void initTime() {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    uint32_t start = millis();
+    while (WiFi.status() == WL_CONNECTED && !timeValid() && millis() - start < 5000) delay(100);
+    Serial.printf("time: %s\n", timeValid() ? "synced" : "not synced (using boot counter)");
+}
+
+// <dir>/<id>_YYYYMMDD_HHMMSS.avi (UTC), or <dir>/<id>_b<boot>_<millis>.avi before
+// SNTP has synced. A numeric suffix is added if the name already exists.
+static void makeClipPath(char* out, size_t n) {
+    char stem[48];
+    time_t now = time(nullptr);
+    if (timeValid()) {
+        struct tm tm;
+        gmtime_r(&now, &tm);
+        char ts[20];
+        strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm);
+        snprintf(stem, sizeof(stem), "%s/%s_%s", SD_RECORDINGS_DIR, device_id, ts);
+    } else {
+        snprintf(stem, sizeof(stem), "%s/%s_b%lu_%lu", SD_RECORDINGS_DIR, device_id,
+                 (unsigned long)boot_count, (unsigned long)millis());
+    }
+    snprintf(out, n, "%s.avi", stem);
+    for (int i = 1; SD_MMC.exists(out) && i < 100; ++i) {
+        snprintf(out, n, "%s_%d.avi", stem, i);
+    }
+}
 
 static bool initCamera() {
     camera_config_t c = {};
@@ -126,6 +184,8 @@ static bool ensureWifi() {
 void setup() {
     Serial.begin(115200);
     Serial.println("\nesp32cam-ai boot");
+    initDeviceId();
+    Serial.printf("device id %s, boot %lu\n", device_id, (unsigned long)boot_count);
 
     if (!SD_MMC.begin("/sdcard", true)) {       // 1-bit mode, GPIO4 free
         Serial.println("SD init failed");
@@ -140,6 +200,7 @@ void setup() {
     if (!initWifi()) {
         Serial.println("wifi connect failed (continuing)");
     }
+    initTime();
     mqtt.begin();
 
     Serial.println("boot: recording startup clip");
@@ -182,8 +243,7 @@ void loop() {
 // buffer + new frames, asks Claude for a summary, saves it, publishes via MQTT.
 static void recordClip(const camera_fb_t* /*trigger_fb*/) {
     char avi_path[64];
-    snprintf(avi_path, sizeof(avi_path), "%s/clip_%lu.avi",
-             SD_RECORDINGS_DIR, (unsigned long)millis());
+    makeClipPath(avi_path, sizeof(avi_path));
     Serial.printf("motion: recording %s\n", avi_path);
 
     AviWriter w;
