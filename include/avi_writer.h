@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include <vector>
 
 // Writes a minimal MJPEG-in-AVI file to the SD card. Frames are JPEG payloads.
 class AviWriter {
@@ -15,6 +16,7 @@ private:
     File file_;
     uint32_t frame_count_ = 0;
     uint32_t movi_size_ = 0;
+    std::vector<uint32_t> frame_sizes_;  // for the idx1 index
     uint16_t width_ = 0;
     uint16_t height_ = 0;
 };
