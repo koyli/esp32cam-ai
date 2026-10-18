@@ -6,6 +6,7 @@
 #include <SD_MMC.h>
 #include <mbedtls/base64.h>
 #include <esp_heap_caps.h>
+#include <stdarg.h>
 
 // Matches the exact layout produced by AviWriter: 12 (RIFF) + 200 (LIST hdrl) + 12 (LIST movi).
 static constexpr uint32_t MOVI_DATA_OFFSET = 224;
@@ -13,6 +14,8 @@ static constexpr uint32_t MOVI_DATA_OFFSET = 224;
 static constexpr size_t MAX_FRAME_SLOTS = 96;
 static constexpr size_t JPEG_BUF_SIZE   = 60 * 1024;
 static constexpr size_t BODY_CAP        = 512 * 1024;
+// Space kept free while adding image frames, so the prompt and closing JSON always fit.
+static constexpr size_t BODY_TAIL_RESERVE = 2048;
 
 struct ChunkInfo { uint32_t data_offset; uint32_t size; };
 
@@ -52,6 +55,21 @@ static void stripCodeFence(String& s) {
     }
 }
 
+// Appends formatted text at buf+pos without writing past cap. On truncation,
+// leaves pos unchanged (buf stays NUL-terminated there) and returns false.
+static bool appendf(char* buf, size_t cap, size_t& pos, const char* fmt, ...) {
+    if (pos >= cap) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + pos, cap - pos, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= cap - pos) {
+        buf[pos] = '\0';
+        return false;
+    }
+    pos += (size_t)n;
+    return true;
+}
 
 // Shared HTTP/TLS send+receive logic — body is in PSRAM, chunked into DRAM for DMA.
 static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, String& resp) {
@@ -208,11 +226,12 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     uint8_t mid_sample = sample_count / 2;
 
     // --- Build scene-analysis request ---
+    size_t pos = 0;
 #ifdef USE_GEMINI
-    size_t pos = (size_t)snprintf(body, BODY_CAP,
+    appendf(body, BODY_CAP, pos,
         "{\"contents\":[{\"parts\":[");
 #else
-    size_t pos = (size_t)snprintf(body, BODY_CAP,
+    appendf(body, BODY_CAP, pos,
         "{\"model\":\"%s\",\"max_tokens\":512,"
         "\"messages\":[{\"role\":\"user\",\"content\":[",
         CLAUDE_MODEL);
@@ -239,20 +258,24 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         }
         b64[b64_len] = '\0';
 
-        if (!first && pos < BODY_CAP - 1) body[pos++] = ',';
-        first = false;
-
 #ifdef USE_GEMINI
-        pos += (size_t)snprintf(body + pos, BODY_CAP - pos,
-            "{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"%s\"}}", b64);
+        bool added = appendf(body, BODY_CAP - BODY_TAIL_RESERVE, pos,
+            "%s{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"%s\"}}",
+            first ? "" : ",", b64);
 #else
-        pos += (size_t)snprintf(body + pos, BODY_CAP - pos,
-            "{\"type\":\"image\",\"source\":{"
+        bool added = appendf(body, BODY_CAP - BODY_TAIL_RESERVE, pos,
+            "%s{\"type\":\"image\",\"source\":{"
             "\"type\":\"base64\","
             "\"media_type\":\"image/jpeg\","
-            "\"data\":\"%s\"}}", b64);
+            "\"data\":\"%s\"}}",
+            first ? "" : ",", b64);
 #endif
         heap_caps_free(b64);
+        if (!added) {
+            Serial.printf("ai: request body full, sending %u of %u frames\n", (unsigned)i, (unsigned)sample_count);
+            break;
+        }
+        first = false;
     }
     f.close();
     heap_caps_free(infos);
@@ -269,20 +292,26 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         "you can read clearly. If no plates are visible use an empty array.";
 
 #ifdef USE_GEMINI
-    pos += (size_t)snprintf(body + pos, BODY_CAP - pos,
+    bool body_ok = appendf(body, BODY_CAP, pos,
         "%s{\"text\":\"%s\"}]}],"
         "\"generationConfig\":{\"maxOutputTokens\":512}}",
         first ? "" : ",", scene_prompt);
-
-    String resp;
-    int code = aiPostWithRetry(GEMINI_MODEL, body, pos, resp);
 #else
-    pos += (size_t)snprintf(body + pos, BODY_CAP - pos,
+    bool body_ok = appendf(body, BODY_CAP, pos,
         "%s{\"type\":\"text\",\"text\":\"%s\"}]"
         "}]}",
         first ? "" : ",", scene_prompt);
+#endif
+    if (!body_ok) {
+        Serial.println("ai: request body overflow");
+        heap_caps_free(body); heap_caps_free(vga_plate);
+        return false;
+    }
 
     String resp;
+#ifdef USE_GEMINI
+    int code = aiPostWithRetry(GEMINI_MODEL, body, pos, resp);
+#else
     int code = aiPostWithRetry(CLAUDE_MODEL, body, pos, resp);
 #endif
 
@@ -299,7 +328,8 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                 if (mbedtls_base64_encode((unsigned char*)fb64, fb64_cap, &fb64_len,
                                           vga_plate, vga_plate_len) == 0) {
                     fb64[fb64_len] = '\0';
-                    pos = (size_t)snprintf(body, BODY_CAP,
+                    pos = 0;
+                    bool fbody_ok = appendf(body, BODY_CAP, pos,
                         "{\"model\":\"%s\",\"max_tokens\":512,"
                         "\"messages\":[{\"role\":\"user\",\"content\":["
                         "{\"type\":\"image\",\"source\":{"
@@ -309,7 +339,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                         "{\"type\":\"text\",\"text\":\"%s\"}]}"
                         "]}",
                         CLAUDE_HAIKU_MODEL, fb64, scene_prompt);
-                    code = claudePost(CLAUDE_HAIKU_MODEL, body, pos, resp);
+                    code = fbody_ok ? claudePost(CLAUDE_HAIKU_MODEL, body, pos, resp) : 0;
                     if (code != 200 || !resp.length()) {
                         Serial.printf("ai: Claude Haiku fallback failed (%d)\n", code);
                         heap_caps_free(fb64);
@@ -401,8 +431,9 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                     "Respond ONLY with valid JSON: {\\\"plates\\\": [\\\"plate1\\\"]}. "
                     "Use an empty array if none are visible.";
 
+                pos = 0;
 #ifdef USE_GEMINI
-                pos = (size_t)snprintf(body, BODY_CAP,
+                bool pbody_ok = appendf(body, BODY_CAP, pos,
                     "{\"contents\":[{\"parts\":["
                     "{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"%s\"}},"
                     "{\"text\":\"%s\"}]}],"
@@ -410,9 +441,9 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                     b64, plate_prompt);
 
                 String plate_resp;
-                if (aiPostWithRetry(GEMINI_PLATES_MODEL, body, pos, plate_resp) == 200) {
+                if (pbody_ok && aiPostWithRetry(GEMINI_PLATES_MODEL, body, pos, plate_resp) == 200) {
 #else
-                pos = (size_t)snprintf(body, BODY_CAP,
+                bool pbody_ok = appendf(body, BODY_CAP, pos,
                     "{\"model\":\"%s\",\"max_tokens\":128,"
                     "\"messages\":[{\"role\":\"user\",\"content\":["
                     "{\"type\":\"image\",\"source\":{"
@@ -423,7 +454,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
                     CLAUDE_PLATES_MODEL, b64, plate_prompt);
 
                 String plate_resp;
-                if (aiPostWithRetry(CLAUDE_PLATES_MODEL, body, pos, plate_resp) == 200) {
+                if (pbody_ok && aiPostWithRetry(CLAUDE_PLATES_MODEL, body, pos, plate_resp) == 200) {
 #endif
                     JsonDocument pres;
                     if (!deserializeJson(pres, plate_resp)) {
