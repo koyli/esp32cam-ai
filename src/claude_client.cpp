@@ -149,12 +149,11 @@ static int geminiPost(const char* model, const char* body, size_t body_len, Stri
         Serial.println("ai: TLS connect failed");
         return 0;
     }
-    char path[256];
-    snprintf(path, sizeof(path),
-        "/v1beta/models/%s:generateContent?key=%s", model, GEMINI_API_KEY);
-    tls.printf("POST %s HTTP/1.0\r\n", path);
+    // Key goes in a header rather than the URL, so it doesn't end up in logs.
+    tls.printf("POST /v1beta/models/%s:generateContent HTTP/1.0\r\n", model);
     tls.printf("Host: generativelanguage.googleapis.com\r\n");
     tls.printf("Content-Type: application/json\r\n");
+    tls.printf("x-goog-api-key: %s\r\n", GEMINI_API_KEY);
     tls.printf("Content-Length: %u\r\n\r\n", (unsigned)body_len);
     return tlsPost(tls, body, body_len, resp);
 }
