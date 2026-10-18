@@ -20,9 +20,10 @@ public:
     // Returns frame at logical index (0 = oldest). Pointer valid until next push().
     const uint8_t* data(size_t i) const;
     size_t len(size_t i) const;
+    uint32_t time(size_t i) const;  // millis() when the frame was pushed
 
 private:
-    struct Slot { uint8_t* buf; size_t len; size_t cap; };
+    struct Slot { uint8_t* buf; size_t len; size_t cap; uint32_t t_ms; };
     Slot* slots_;
     size_t capacity_;
     size_t head_;   // next write

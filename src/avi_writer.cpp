@@ -7,10 +7,10 @@ namespace {
 constexpr size_t HDR_SIZE = 224;        // bytes reserved before first frame
 }
 
-bool AviWriter::begin(const char* path, uint16_t w, uint16_t h, uint8_t fps) {
+bool AviWriter::begin(const char* path, uint16_t w, uint16_t h) {
     file_ = SD_MMC.open(path, FILE_WRITE);
     if (!file_) return false;
-    width_ = w; height_ = h; fps_ = fps;
+    width_ = w; height_ = h;
     frame_count_ = 0; movi_size_ = 0;
 
     // Reserve space for the header — finalised in end().
@@ -35,7 +35,7 @@ bool AviWriter::writeFrame(const uint8_t* jpeg, size_t len) {
     return true;
 }
 
-bool AviWriter::end() {
+bool AviWriter::end(uint32_t us_per_frame) {
     if (!file_) return false;
 
     const uint32_t file_size = file_.position();
@@ -53,9 +53,9 @@ bool AviWriter::end() {
         file_.write(b, 2);
     };
 
-    const uint32_t us_per_frame      = fps_ ? 1000000UL / fps_ : 100000UL;
+    if (!us_per_frame) us_per_frame = 100000UL;
     const uint32_t suggested_buf     = 100000;
-    const uint32_t max_bytes_per_sec = suggested_buf * (fps_ ? fps_ : 10);
+    const uint32_t max_bytes_per_sec = (uint32_t)((uint64_t)suggested_buf * 1000000UL / us_per_frame);
 
     // RIFF
     writeFourCC("RIFF");
@@ -96,8 +96,8 @@ bool AviWriter::end() {
     writeU16(0);                      // priority
     writeU16(0);                      // language
     writeU32(0);                      // initial frames
-    writeU32(1);                      // scale
-    writeU32(fps_);                   // rate -> fps = rate/scale
+    writeU32(us_per_frame);           // scale
+    writeU32(1000000UL);              // rate -> fps = rate/scale
     writeU32(0);                      // start
     writeU32(frame_count_);           // length
     writeU32(suggested_buf);
