@@ -1,5 +1,6 @@
 #include "mqtt_publisher.h"
 #include "config.h"
+#include "ca_certs.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -9,7 +10,7 @@ static WiFiClientSecure net;
 static PubSubClient     client(net);
 
 bool MqttPublisher::begin() {
-    net.setInsecure();
+    configureTls(net, MQTT_CA_CERT);
     net.setTimeout(10000);
     client.setServer(MQTT_HOST, MQTT_PORT);
     client.setBufferSize(2048);

@@ -1,5 +1,6 @@
 #include "upload_client.h"
 #include "config.h"
+#include "ca_certs.h"
 
 #include <WiFiClientSecure.h>
 #include <SD_MMC.h>
@@ -18,7 +19,7 @@ bool uploadFile(const char* sd_path) {
     Serial.printf("upload: %s (%u bytes)\n", filename, (unsigned)file_size);
 
     WiFiClientSecure tls;
-    tls.setInsecure();
+    configureTls(tls, UPLOAD_CA_CERT);
     tls.setTimeout(30000);
     if (!tls.connect(UPLOAD_HOST, UPLOAD_PORT)) {
         Serial.println("upload: TLS connect failed");
