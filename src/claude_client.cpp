@@ -1,5 +1,6 @@
 #include "claude_client.h"
 #include "config.h"
+#include "ca_certs.h"
 
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -124,7 +125,7 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
 // Claude — always compiled (primary or fallback depending on USE_GEMINI).
 static int claudePost(const char* /*model*/, const char* body, size_t body_len, String& resp) {
     WiFiClientSecure tls;
-    tls.setInsecure();
+    configureTls(tls, ROOT_CA_BUNDLE);
     tls.setTimeout(10000);
     if (!tls.connect(CLAUDE_API_HOST, 443)) {
         Serial.println("ai: TLS connect failed");
@@ -142,7 +143,7 @@ static int claudePost(const char* /*model*/, const char* body, size_t body_len, 
 #ifdef USE_GEMINI
 static int geminiPost(const char* model, const char* body, size_t body_len, String& resp) {
     WiFiClientSecure tls;
-    tls.setInsecure();
+    configureTls(tls, ROOT_CA_BUNDLE);
     tls.setTimeout(10000);
     if (!tls.connect("generativelanguage.googleapis.com", 443)) {
         Serial.println("ai: TLS connect failed");

@@ -62,3 +62,13 @@ static const WifiCred WIFI_CREDS[] = {
 #define UPLOAD_HOST   "your-oci-hostname.example.com"
 #define UPLOAD_PORT   443
 #define UPLOAD_TOKEN  "REPLACE_ME"
+
+// ---------------- TLS ------------------
+// Servers are verified against the root CAs in include/ca_certs.h (Google Trust
+// Services for the AI APIs, Let's Encrypt for the upload server). If your MQTT
+// broker or upload host uses a different CA, give its root cert (PEM) here:
+// #define MQTT_CA_CERT   "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+// #define UPLOAD_CA_CERT "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+// Uncomment to skip certificate verification entirely (not recommended: anyone
+// on the network path can read your API keys and upload token).
+// #define TLS_INSECURE
