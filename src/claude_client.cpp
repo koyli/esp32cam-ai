@@ -18,6 +18,13 @@ static constexpr size_t BODY_CAP        = 512 * 1024;
 // Space kept free while adding image frames, so the prompt and closing JSON always fit.
 static constexpr size_t BODY_TAIL_RESERVE = 2048;
 
+#ifndef CLAUDE_MODEL_PARAMS
+#define CLAUDE_MODEL_PARAMS ""
+#endif
+#ifndef CLAUDE_MODEL_BETA
+#define CLAUDE_MODEL_BETA ""
+#endif
+
 struct ChunkInfo { uint32_t data_offset; uint32_t size; };
 
 // Single-pass scan of '00dc' chunks starting at MOVI_DATA_OFFSET.
@@ -123,7 +130,7 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
 // --- Backend-specific POST ---
 
 // Claude — always compiled (primary or fallback depending on USE_GEMINI).
-static int claudePost(const char* /*model*/, const char* body, size_t body_len, String& resp) {
+static int claudePost(const char* model, const char* body, size_t body_len, String& resp) {
     WiFiClientSecure tls;
     configureTls(tls, ROOT_CA_BUNDLE);
     tls.setTimeout(10000);
@@ -136,6 +143,13 @@ static int claudePost(const char* /*model*/, const char* body, size_t body_len, 
     tls.printf("Content-Type: application/json\r\n");
     tls.printf("x-api-key: %s\r\n", CLAUDE_API_KEY);
     tls.printf("anthropic-version: 2023-06-01\r\n");
+#ifndef USE_GEMINI
+    if (CLAUDE_MODEL_BETA[0] && strcmp(model, CLAUDE_MODEL) == 0) {
+        tls.printf("anthropic-beta: %s\r\n", CLAUDE_MODEL_BETA);
+    }
+#else
+    (void)model;
+#endif
     tls.printf("Content-Length: %u\r\n\r\n", (unsigned)body_len);
     return tlsPost(tls, body, body_len, resp);
 }
@@ -149,12 +163,11 @@ static int geminiPost(const char* model, const char* body, size_t body_len, Stri
         Serial.println("ai: TLS connect failed");
         return 0;
     }
-    char path[256];
-    snprintf(path, sizeof(path),
-        "/v1beta/models/%s:generateContent?key=%s", model, GEMINI_API_KEY);
-    tls.printf("POST %s HTTP/1.0\r\n", path);
+    // Key goes in a header rather than the URL, so it doesn't end up in logs.
+    tls.printf("POST /v1beta/models/%s:generateContent HTTP/1.0\r\n", model);
     tls.printf("Host: generativelanguage.googleapis.com\r\n");
     tls.printf("Content-Type: application/json\r\n");
+    tls.printf("x-goog-api-key: %s\r\n", GEMINI_API_KEY);
     tls.printf("Content-Length: %u\r\n\r\n", (unsigned)body_len);
     return tlsPost(tls, body, body_len, resp);
 }
@@ -179,311 +192,260 @@ static int aiPostWithRetry(const char* model, const char* body, size_t body_len,
     return code;
 }
 
-// Extract the text content from the API response JSON.
-static String extractText(JsonDocument& doc) {
 #ifdef USE_GEMINI
-    return doc["candidates"][0]["content"]["parts"][0]["text"] | "";
+static constexpr bool PRIMARY_IS_GEMINI = true;
+static const char*    PRIMARY_MODEL     = GEMINI_MODEL;
+static const char*    PRIMARY_PARAMS    = "";
+static const char*    PLATES_MODEL      = GEMINI_PLATES_MODEL;
 #else
-    return doc["content"][0]["text"] | "";
+static constexpr bool PRIMARY_IS_GEMINI = false;
+static const char*    PRIMARY_MODEL     = CLAUDE_MODEL;
+static const char*    PRIMARY_PARAMS    = CLAUDE_MODEL_PARAMS;
+static const char*    PLATES_MODEL      = CLAUDE_PLATES_MODEL;
 #endif
+
+static const char* SCENE_PROMPT =
+    "Analyse these frames and respond with ONLY valid JSON in this exact format: "
+    "{\\\"description\\\": \\\"brief scene description\\\", "
+    "\\\"has_vehicle\\\": true, "
+    "\\\"plates\\\": [\\\"plate1\\\", \\\"plate2\\\"]}. "
+    "Set has_vehicle to true only if a vehicle (car, van, truck, bus, motorbike etc) "
+    "is clearly present. "
+    "The plates array should contain any UK or Irish vehicle registration plates "
+    "you can read clearly. If no plates are visible use an empty array.";
+
+static const char* PLATE_PROMPT =
+    "List all UK and Irish vehicle registration plates visible in this image. "
+    "Respond ONLY with valid JSON: {\\\"plates\\\": [\\\"plate1\\\"]}. "
+    "Use an empty array if none are visible.";
+
+// PSRAM allocation freed when it goes out of scope.
+struct PsramBuf {
+    void* p;
+    explicit PsramBuf(size_t n) : p(heap_caps_malloc(n, MALLOC_CAP_SPIRAM)) {}
+    ~PsramBuf() { heap_caps_free(p); }
+    PsramBuf(const PsramBuf&) = delete;
+    PsramBuf& operator=(const PsramBuf&) = delete;
+    template <typename T> T* as() const { return static_cast<T*>(p); }
+};
+
+// --- Request building (Gemini generateContent or Claude Messages) ---
+
+// Opens the request JSON, up to the first content part. extra is inserted
+// verbatim into a Claude request (each field followed by a comma).
+static bool beginRequest(char* buf, size_t& pos, bool gemini, const char* model,
+                         int max_tokens, const char* extra) {
+    pos = 0;
+    if (gemini) return appendf(buf, BODY_CAP, pos, "{\"contents\":[{\"parts\":[");
+    return appendf(buf, BODY_CAP, pos,
+        "{\"model\":\"%s\",\"max_tokens\":%d,%s"
+        "\"messages\":[{\"role\":\"user\",\"content\":[",
+        model, max_tokens, extra);
 }
 
+// Appends a base64 JPEG content part, encoding straight into buf. On failure
+// pos is restored and false returned.
+static bool appendImage(char* buf, size_t cap, size_t& pos, bool gemini,
+                        const uint8_t* jpeg, size_t len, bool comma) {
+    const size_t start = pos;
+    bool ok = appendf(buf, cap, pos,
+        gemini ? "%s{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\""
+               : "%s{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"",
+        comma ? "," : "");
+    if (ok) {
+        size_t n = 0;
+        ok = mbedtls_base64_encode((unsigned char*)buf + pos, cap - pos, &n, jpeg, len) == 0;
+        if (ok) pos += n;
+    }
+    ok = ok && appendf(buf, cap, pos, "\"}}");
+    if (!ok) {
+        pos = start;
+        buf[pos] = '\0';
+    }
+    return ok;
+}
+
+// Appends the text prompt and closes the request JSON.
+static bool endRequest(char* buf, size_t& pos, bool gemini, const char* prompt,
+                       int max_tokens, bool comma) {
+    if (gemini) {
+        return appendf(buf, BODY_CAP, pos,
+            "%s{\"text\":\"%s\"}]}],\"generationConfig\":{\"maxOutputTokens\":%d}}",
+            comma ? "," : "", prompt, max_tokens);
+    }
+    return appendf(buf, BODY_CAP, pos,
+        "%s{\"type\":\"text\",\"text\":\"%s\"}]}]}",
+        comma ? "," : "", prompt);
+}
+
+static bool buildSingleImageRequest(char* buf, size_t& pos, bool gemini, const char* model,
+                                    int max_tokens, const char* extra,
+                                    const uint8_t* jpeg, size_t len, const char* prompt) {
+    return beginRequest(buf, pos, gemini, model, max_tokens, extra)
+        && appendImage(buf, BODY_CAP, pos, gemini, jpeg, len, false)
+        && endRequest(buf, pos, gemini, prompt, max_tokens, true);
+}
+
+// --- Response parsing ---
+
+// Returns the first text block of a Claude response. Blocks are matched by type,
+// since a response can start with a (possibly empty) thinking block. A refusal
+// yields an empty string so the caller treats it as a failure.
 static String extractClaudeText(JsonDocument& doc) {
-    return doc["content"][0]["text"] | "";
+    if (doc["stop_reason"] == "refusal") {
+        Serial.printf("ai: Claude refused (%s)\n", (const char*)(doc["stop_details"]["category"] | "unknown"));
+        return "";
+    }
+    for (JsonVariant block : doc["content"].as<JsonArray>()) {
+        if (block["type"] == "text") return block["text"] | "";
+    }
+    return "";
+}
+
+// Parses an API response whose text is itself a JSON object (optionally in a
+// code fence). On success text holds that JSON and inner its parsed form.
+static bool parseReply(const String& resp, bool gemini, String& text, JsonDocument& inner) {
+    JsonDocument res;
+    if (deserializeJson(res, resp)) {
+        Serial.println("ai: JSON parse failed");
+        return false;
+    }
+    text = gemini ? String(res["candidates"][0]["content"]["parts"][0]["text"] | "")
+                  : extractClaudeText(res);
+    if (!text.length()) return false;
+    stripCodeFence(text);
+    if (deserializeJson(inner, text)) {
+        Serial.println("ai: inner JSON parse failed");
+        return false;
+    }
+    return true;
+}
+
+static String joinPlates(JsonDocument& inner) {
+    String plates;
+    for (JsonVariant p : inner["plates"].as<JsonArray>()) {
+        if (plates.length()) plates += ", ";
+        plates += p.as<String>();
+    }
+    return plates;
 }
 
 bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String& out, String& plates) {
-    auto* infos     = (ChunkInfo*)heap_caps_malloc(MAX_FRAME_SLOTS * sizeof(ChunkInfo), MALLOC_CAP_SPIRAM);
-    auto* jpeg      = (uint8_t*) heap_caps_malloc(JPEG_BUF_SIZE,                        MALLOC_CAP_SPIRAM);
-    auto* body      = (char*)    heap_caps_malloc(BODY_CAP,                              MALLOC_CAP_SPIRAM);
-    auto* vga_plate = (uint8_t*) heap_caps_malloc(JPEG_BUF_SIZE,                        MALLOC_CAP_SPIRAM);
-
-    if (!infos || !jpeg || !body || !vga_plate) {
+    PsramBuf body(BODY_CAP);
+    PsramBuf mid_frame(JPEG_BUF_SIZE);  // middle sample, reused for the single-image calls
+    if (!body.p || !mid_frame.p) {
         Serial.println("ai: PSRAM alloc failed");
-        heap_caps_free(infos); heap_caps_free(jpeg);
-        heap_caps_free(body);  heap_caps_free(vga_plate);
         return false;
     }
-    size_t vga_plate_len = 0;
-
-    File f = SD_MMC.open(avi_path, FILE_READ);
-    if (!f) {
-        Serial.printf("ai: cannot open %s\n", avi_path);
-        heap_caps_free(infos); heap_caps_free(jpeg);
-        heap_caps_free(body);  heap_caps_free(vga_plate);
-        return false;
-    }
-
-    size_t total = scanFrames(f, infos, MAX_FRAME_SLOTS);
-    Serial.printf("ai: %u frames found in AVI\n", (unsigned)total);
-    if (total == 0) {
-        f.close();
-        heap_caps_free(infos); heap_caps_free(jpeg);
-        heap_caps_free(body);  heap_caps_free(vga_plate);
-        return false;
-    }
-
-    if (sample_count > (uint8_t)total) sample_count = (uint8_t)total;
-    uint8_t mid_sample = sample_count / 2;
-
-    // --- Build scene-analysis request ---
+    char* req = body.as<char>();
     size_t pos = 0;
-#ifdef USE_GEMINI
-    appendf(body, BODY_CAP, pos,
-        "{\"contents\":[{\"parts\":[");
-#else
-    appendf(body, BODY_CAP, pos,
-        "{\"model\":\"%s\",\"max_tokens\":512,"
-        "\"messages\":[{\"role\":\"user\",\"content\":[",
-        CLAUDE_MODEL);
-#endif
+    size_t mid_len = 0;
 
-    bool first = true;
-    for (uint8_t i = 0; i < sample_count; ++i) {
-        const ChunkInfo& ci = infos[frameIndex(i, sample_count, total)];
-        if (ci.size == 0 || ci.size > JPEG_BUF_SIZE) continue;
-        if (!f.seek(ci.data_offset)) continue;
-        if ((size_t)f.read(jpeg, ci.size) != ci.size) continue;
-
-        if (i == mid_sample) {
-            memcpy(vga_plate, jpeg, ci.size);
-            vga_plate_len = ci.size;
+    // --- Scene-analysis request: sample_count frames spread across the clip ---
+    {
+        PsramBuf infos(MAX_FRAME_SLOTS * sizeof(ChunkInfo));
+        PsramBuf jpeg(JPEG_BUF_SIZE);
+        if (!infos.p || !jpeg.p) {
+            Serial.println("ai: PSRAM alloc failed");
+            return false;
         }
 
-        size_t b64_cap = ((ci.size + 2) / 3) * 4 + 1;
-        auto* b64 = (char*)heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM);
-        if (!b64) continue;
-        size_t b64_len = 0;
-        if (mbedtls_base64_encode((unsigned char*)b64, b64_cap, &b64_len, jpeg, ci.size) != 0) {
-            heap_caps_free(b64); continue;
+        File f = SD_MMC.open(avi_path, FILE_READ);
+        if (!f) {
+            Serial.printf("ai: cannot open %s\n", avi_path);
+            return false;
         }
-        b64[b64_len] = '\0';
 
-#ifdef USE_GEMINI
-        bool added = appendf(body, BODY_CAP - BODY_TAIL_RESERVE, pos,
-            "%s{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"%s\"}}",
-            first ? "" : ",", b64);
-#else
-        bool added = appendf(body, BODY_CAP - BODY_TAIL_RESERVE, pos,
-            "%s{\"type\":\"image\",\"source\":{"
-            "\"type\":\"base64\","
-            "\"media_type\":\"image/jpeg\","
-            "\"data\":\"%s\"}}",
-            first ? "" : ",", b64);
-#endif
-        heap_caps_free(b64);
-        if (!added) {
-            Serial.printf("ai: request body full, sending %u of %u frames\n", (unsigned)i, (unsigned)sample_count);
-            break;
+        size_t total = scanFrames(f, infos.as<ChunkInfo>(), MAX_FRAME_SLOTS);
+        Serial.printf("ai: %u frames found in AVI\n", (unsigned)total);
+        if (total == 0) {
+            f.close();
+            return false;
         }
-        first = false;
-    }
-    f.close();
-    heap_caps_free(infos);
-    heap_caps_free(jpeg);
 
-    const char* scene_prompt =
-        "Analyse these frames and respond with ONLY valid JSON in this exact format: "
-        "{\\\"description\\\": \\\"brief scene description\\\", "
-        "\\\"has_vehicle\\\": true, "
-        "\\\"plates\\\": [\\\"plate1\\\", \\\"plate2\\\"]}. "
-        "Set has_vehicle to true only if a vehicle (car, van, truck, bus, motorbike etc) "
-        "is clearly present. "
-        "The plates array should contain any UK or Irish vehicle registration plates "
-        "you can read clearly. If no plates are visible use an empty array.";
+        if (sample_count > total) sample_count = (uint8_t)total;
+        uint8_t mid_sample = sample_count / 2;
 
-#ifdef USE_GEMINI
-    bool body_ok = appendf(body, BODY_CAP, pos,
-        "%s{\"text\":\"%s\"}]}],"
-        "\"generationConfig\":{\"maxOutputTokens\":512}}",
-        first ? "" : ",", scene_prompt);
-#else
-    bool body_ok = appendf(body, BODY_CAP, pos,
-        "%s{\"type\":\"text\",\"text\":\"%s\"}]"
-        "}]}",
-        first ? "" : ",", scene_prompt);
-#endif
-    if (!body_ok) {
-        Serial.println("ai: request body overflow");
-        heap_caps_free(body); heap_caps_free(vga_plate);
-        return false;
+        beginRequest(req, pos, PRIMARY_IS_GEMINI, PRIMARY_MODEL, 512, PRIMARY_PARAMS);
+        bool first = true;
+        for (uint8_t i = 0; i < sample_count; ++i) {
+            const ChunkInfo& ci = infos.as<ChunkInfo>()[frameIndex(i, sample_count, total)];
+            if (ci.size == 0 || ci.size > JPEG_BUF_SIZE) continue;
+            if (!f.seek(ci.data_offset)) continue;
+            if ((size_t)f.read(jpeg.as<uint8_t>(), ci.size) != ci.size) continue;
+
+            if (i == mid_sample) {
+                memcpy(mid_frame.p, jpeg.p, ci.size);
+                mid_len = ci.size;
+            }
+            if (!appendImage(req, BODY_CAP - BODY_TAIL_RESERVE, pos, PRIMARY_IS_GEMINI,
+                             jpeg.as<uint8_t>(), ci.size, !first)) {
+                Serial.printf("ai: request body full, sending %u of %u frames\n", (unsigned)i, (unsigned)sample_count);
+                break;
+            }
+            first = false;
+        }
+        f.close();
+
+        if (!endRequest(req, pos, PRIMARY_IS_GEMINI, SCENE_PROMPT, 512, !first)) {
+            Serial.println("ai: request body overflow");
+            return false;
+        }
     }
 
     String resp;
-#ifdef USE_GEMINI
-    int code = aiPostWithRetry(GEMINI_MODEL, body, pos, resp);
-#else
-    int code = aiPostWithRetry(CLAUDE_MODEL, body, pos, resp);
-#endif
+    String text;
+    JsonDocument scene;
+    int code = aiPostWithRetry(PRIMARY_MODEL, req, pos, resp);
 
 #ifdef USE_GEMINI
-    // Fallback: if Gemini failed, try Claude Haiku with the mid-frame.
+    // Fallback: if Gemini failed, one Claude Haiku call with the middle frame
+    // (no separate plate-reading call).
     if (code != 200 || !resp.length()) {
         Serial.println("ai: Gemini failed, falling back to Claude Haiku");
         resp = "";
-        if (vga_plate_len > 0) {
-            size_t fb64_cap = ((vga_plate_len + 2) / 3) * 4 + 1;
-            auto* fb64 = (char*)heap_caps_malloc(fb64_cap, MALLOC_CAP_SPIRAM);
-            if (fb64) {
-                size_t fb64_len = 0;
-                if (mbedtls_base64_encode((unsigned char*)fb64, fb64_cap, &fb64_len,
-                                          vga_plate, vga_plate_len) == 0) {
-                    fb64[fb64_len] = '\0';
-                    pos = 0;
-                    bool fbody_ok = appendf(body, BODY_CAP, pos,
-                        "{\"model\":\"%s\",\"max_tokens\":512,"
-                        "\"messages\":[{\"role\":\"user\",\"content\":["
-                        "{\"type\":\"image\",\"source\":{"
-                        "\"type\":\"base64\","
-                        "\"media_type\":\"image/jpeg\","
-                        "\"data\":\"%s\"}},"
-                        "{\"type\":\"text\",\"text\":\"%s\"}]}"
-                        "]}",
-                        CLAUDE_HAIKU_MODEL, fb64, scene_prompt);
-                    code = fbody_ok ? claudePost(CLAUDE_HAIKU_MODEL, body, pos, resp) : 0;
-                    if (code != 200 || !resp.length()) {
-                        Serial.printf("ai: Claude Haiku fallback failed (%d)\n", code);
-                        heap_caps_free(fb64);
-                        heap_caps_free(body); heap_caps_free(vga_plate);
-                        return false;
-                    }
-                    // Parse as Claude response and return early (no plate call for fallback).
-                    JsonDocument fres;
-                    if (deserializeJson(fres, resp)) {
-                        Serial.println("ai: haiku JSON parse failed");
-                        heap_caps_free(fb64);
-                        heap_caps_free(body); heap_caps_free(vga_plate);
-                        return false;
-                    }
-                    String ftext = extractClaudeText(fres);
-                    stripCodeFence(ftext);
-                    JsonDocument finner;
-                    if (deserializeJson(finner, ftext)) {
-                        heap_caps_free(fb64);
-                        heap_caps_free(body); heap_caps_free(vga_plate);
-                        return false;
-                    }
-                    out = ftext;
-                    plates = "";
-                    JsonArray farr = finner["plates"].as<JsonArray>();
-                    for (JsonVariant p : farr) {
-                        if (plates.length()) plates += ", ";
-                        plates += p.as<String>();
-                    }
-                    heap_caps_free(fb64);
-                    heap_caps_free(body); heap_caps_free(vga_plate);
-                    return out.length() > 0;
-                }
-                heap_caps_free(fb64);
-            }
+        if (!mid_len || !buildSingleImageRequest(req, pos, false, CLAUDE_HAIKU_MODEL, 512, "",
+                                                 mid_frame.as<uint8_t>(), mid_len, SCENE_PROMPT)) {
+            return false;
         }
-        heap_caps_free(body); heap_caps_free(vga_plate);
-        return false;
+        code = claudePost(CLAUDE_HAIKU_MODEL, req, pos, resp);
+        if (code != 200 || !resp.length()) {
+            Serial.printf("ai: Claude Haiku fallback failed (%d)\n", code);
+            return false;
+        }
+        if (!parseReply(resp, false, text, scene)) return false;
+        out = text;
+        plates = joinPlates(scene);
+        return out.length() > 0;
     }
 #endif
 
     if (code != 200) {
         Serial.println("ai: " + resp.substring(0, 300));
-        heap_caps_free(body); heap_caps_free(vga_plate);
         return false;
     }
-
-    JsonDocument res;
-    if (deserializeJson(res, resp)) {
-        Serial.println("ai: JSON parse failed");
-        heap_caps_free(body); heap_caps_free(vga_plate);
-        return false;
-    }
-    String text = extractText(res);
-    if (!text.length()) {
-        heap_caps_free(body); heap_caps_free(vga_plate);
-        return false;
-    }
-
-    stripCodeFence(text);
-    JsonDocument inner;
-    if (deserializeJson(inner, text)) {
-        Serial.println("ai: inner JSON parse failed");
-        heap_caps_free(body); heap_caps_free(vga_plate);
-        return false;
-    }
+    if (!parseReply(resp, PRIMARY_IS_GEMINI, text, scene)) return false;
     out = text;
-    bool has_vehicle = inner["has_vehicle"] | false;
-    plates = "";
-    JsonArray arr = inner["plates"].as<JsonArray>();
-    for (JsonVariant p : arr) {
-        if (plates.length()) plates += ", ";
-        plates += p.as<String>();
-    }
+    plates = joinPlates(scene);
 
-    // --- Plate-reading call when a vehicle is present ---
-    if (has_vehicle && vga_plate_len > 0) {
+    // --- Plate-reading call on the middle frame when a vehicle is present ---
+    if ((scene["has_vehicle"] | false) && mid_len) {
         Serial.println("ai: vehicle detected, running VGA plate-reading call");
-
-        size_t b64_cap = ((vga_plate_len + 2) / 3) * 4 + 1;
-        auto* b64 = (char*)heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM);
-        if (b64) {
-            size_t b64_len = 0;
-            if (mbedtls_base64_encode((unsigned char*)b64, b64_cap, &b64_len, vga_plate, vga_plate_len) == 0) {
-                b64[b64_len] = '\0';
-
-                const char* plate_prompt =
-                    "List all UK and Irish vehicle registration plates visible in this image. "
-                    "Respond ONLY with valid JSON: {\\\"plates\\\": [\\\"plate1\\\"]}. "
-                    "Use an empty array if none are visible.";
-
-                pos = 0;
-#ifdef USE_GEMINI
-                bool pbody_ok = appendf(body, BODY_CAP, pos,
-                    "{\"contents\":[{\"parts\":["
-                    "{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"%s\"}},"
-                    "{\"text\":\"%s\"}]}],"
-                    "\"generationConfig\":{\"maxOutputTokens\":128}}",
-                    b64, plate_prompt);
-
-                String plate_resp;
-                if (pbody_ok && aiPostWithRetry(GEMINI_PLATES_MODEL, body, pos, plate_resp) == 200) {
-#else
-                bool pbody_ok = appendf(body, BODY_CAP, pos,
-                    "{\"model\":\"%s\",\"max_tokens\":128,"
-                    "\"messages\":[{\"role\":\"user\",\"content\":["
-                    "{\"type\":\"image\",\"source\":{"
-                    "\"type\":\"base64\","
-                    "\"media_type\":\"image/jpeg\","
-                    "\"data\":\"%s\"}},"
-                    "{\"type\":\"text\",\"text\":\"%s\"}]}]}",
-                    CLAUDE_PLATES_MODEL, b64, plate_prompt);
-
-                String plate_resp;
-                if (pbody_ok && aiPostWithRetry(CLAUDE_PLATES_MODEL, body, pos, plate_resp) == 200) {
-#endif
-                    JsonDocument pres;
-                    if (!deserializeJson(pres, plate_resp)) {
-                        String ptext = extractText(pres);
-                        stripCodeFence(ptext);
-                        JsonDocument pinner;
-                        if (!deserializeJson(pinner, ptext)) {
-                            String vga_plates;
-                            JsonArray parr = pinner["plates"].as<JsonArray>();
-                            for (JsonVariant p : parr) {
-                                if (vga_plates.length()) vga_plates += ", ";
-                                vga_plates += p.as<String>();
-                            }
-                            if (vga_plates.length()) {
-                                plates = vga_plates;
-                                Serial.printf("ai: plates (VGA): %s\n", plates.c_str());
-                            } else {
-                                Serial.println("ai: plate call returned no results, keeping scene analysis plates");
-                            }
-                        }
-                    }
-                }
+        String plate_resp, plate_text;
+        JsonDocument plate_doc;
+        if (buildSingleImageRequest(req, pos, PRIMARY_IS_GEMINI, PLATES_MODEL, 128, "",
+                                    mid_frame.as<uint8_t>(), mid_len, PLATE_PROMPT)
+            && aiPostWithRetry(PLATES_MODEL, req, pos, plate_resp) == 200
+            && parseReply(plate_resp, PRIMARY_IS_GEMINI, plate_text, plate_doc)) {
+            String vga_plates = joinPlates(plate_doc);
+            if (vga_plates.length()) {
+                plates = vga_plates;
+                Serial.printf("ai: plates (VGA): %s\n", plates.c_str());
+            } else {
+                Serial.println("ai: plate call returned no results, keeping scene analysis plates");
             }
-            heap_caps_free(b64);
         }
     }
 
-    heap_caps_free(body);
-    heap_caps_free(vga_plate);
     return out.length() > 0;
 }

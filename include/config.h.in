@@ -28,14 +28,21 @@ static const WifiCred WIFI_CREDS[] = {
 #define CLAUDE_API_HOST       "api.anthropic.com"
 #define CLAUDE_API_PATH       "/v1/messages"
 #define CLAUDE_API_KEY        "sk-ant-REPLACE_ME"
-#define CLAUDE_HAIKU_MODEL    "claude-haiku-4-5-20251001"
+#define CLAUDE_HAIKU_MODEL    "claude-haiku-4-5"
 
 #ifdef USE_GEMINI
 #define GEMINI_API_KEY        "REPLACE_ME"
 #define GEMINI_MODEL          "gemini-2.5-flash"
 #define GEMINI_PLATES_MODEL   "gemini-2.5-flash-lite"
 #else
-#define CLAUDE_MODEL          "claude-sonnet-4-6"
+#define CLAUDE_MODEL          "claude-sonnet-5-5"
+// Extra request fields and beta header sent with CLAUDE_MODEL requests only.
+// between_tools turns off extended thinking (thinking would count against the
+// small max_tokens and isn't needed for a short JSON summary); fallbacks lets
+// the API retry a refusal on another model. Both are Sonnet 5.5-specific:
+// set both to "" if you change CLAUDE_MODEL.
+#define CLAUDE_MODEL_PARAMS   "\"thinking\":{\"type\":\"between_tools\"},\"fallbacks\":\"default\","
+#define CLAUDE_MODEL_BETA     "server-side-fallback-2026-07-01"
 #define CLAUDE_PLATES_MODEL   CLAUDE_HAIKU_MODEL
 #endif
 
