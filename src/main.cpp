@@ -246,18 +246,39 @@ static void recordClip() {
     Serial.printf("motion: recording %s\n", avi_path);
 
     AviWriter w;
-    if (!w.begin(avi_path, 640, 480, 10)) return;
+    if (!w.begin(avi_path, 640, 480)) return;
 
-    for (size_t i = 0; i < ring.size(); ++i) {
+    // Pre-trigger frames arrive at the main loop's rate (which includes motion
+    // decoding). Space the post-trigger frames at the same interval so the whole
+    // clip plays back at a consistent speed.
+    const size_t pre = ring.size();
+    uint32_t interval_ms = 100;
+    if (pre >= 2) interval_ms = (ring.time(pre - 1) - ring.time(0)) / (pre - 1);
+
+    uint32_t frames  = 0;
+    uint32_t first_t = 0, last_t = 0;
+    for (size_t i = 0; i < pre; ++i) {
         w.writeFrame(ring.data(i), ring.len(i));
+        if (!frames++) first_t = ring.time(i);
+        last_t = ring.time(i);
     }
     for (int i = 0; i < POST_FRAMES; ++i) {
+        if (frames) {
+            while (millis() - last_t < interval_ms) delay(1);
+        }
         camera_fb_t* f = esp_camera_fb_get();
         if (!f) continue;
+        uint32_t t = millis();
         w.writeFrame(f->buf, f->len);
         esp_camera_fb_return(f);
+        if (!frames++) first_t = t;
+        last_t = t;
     }
-    w.end();
+    uint32_t us_per_frame = frames >= 2 ? (uint32_t)((uint64_t)(last_t - first_t) * 1000 / (frames - 1))
+                                        : interval_ms * 1000;
+    Serial.printf("motion: %lu frames, %.1f fps\n", (unsigned long)frames,
+                  us_per_frame ? 1e6f / us_per_frame : 0.0f);
+    w.end(us_per_frame);
 
     ensureWifi();
 
