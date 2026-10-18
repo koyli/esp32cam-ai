@@ -173,7 +173,7 @@ static bool initWifi() {
     return false;
 }
 
-static void recordClip(const camera_fb_t* trigger_fb);
+static void recordClip();
 
 static bool ensureWifi() {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -204,7 +204,7 @@ void setup() {
     mqtt.begin();
 
     Serial.println("boot: recording startup clip");
-    recordClip(nullptr);
+    recordClip();
 }
 
 void loop() {
@@ -231,17 +231,16 @@ void loop() {
     }
 
     ring.push(fb);
+    esp_camera_fb_return(fb);
 
     if (motion.triggered(changed)) {
-        recordClip(fb);
+        recordClip();
     }
-
-    esp_camera_fb_return(fb);
 }
 
 // Captures POST_FRAMES additional frames, writes the AVI containing the ring
 // buffer + new frames, asks Claude for a summary, saves it, publishes via MQTT.
-static void recordClip(const camera_fb_t* /*trigger_fb*/) {
+static void recordClip() {
     char avi_path[64];
     makeClipPath(avi_path, sizeof(avi_path));
     Serial.printf("motion: recording %s\n", avi_path);
@@ -289,4 +288,10 @@ static void recordClip(const camera_fb_t* /*trigger_fb*/) {
 
     uploadFile(avi_path);
     uploadFile(txt_path);
+
+    // Recording, AI calls and uploads take a long time. Drop the stale frames so the
+    // next comparison isn't against a scene from a minute ago (which would re-trigger)
+    // and the next clip's lead-in frames are actually from just before its trigger.
+    motion.reset();
+    ring.clear();
 }
