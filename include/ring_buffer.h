@@ -11,6 +11,8 @@ public:
 
     // Copies fb->buf into the ring. Oldest entry is evicted when full.
     void push(const camera_fb_t* fb);
+    // Drops all frames (buffers are kept for reuse).
+    void clear() { head_ = 0; count_ = 0; }
 
     size_t size() const { return count_; }
     size_t capacity() const { return capacity_; }
