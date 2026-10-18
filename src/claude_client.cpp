@@ -18,6 +18,13 @@ static constexpr size_t BODY_CAP        = 512 * 1024;
 // Space kept free while adding image frames, so the prompt and closing JSON always fit.
 static constexpr size_t BODY_TAIL_RESERVE = 2048;
 
+#ifndef CLAUDE_MODEL_PARAMS
+#define CLAUDE_MODEL_PARAMS ""
+#endif
+#ifndef CLAUDE_MODEL_BETA
+#define CLAUDE_MODEL_BETA ""
+#endif
+
 struct ChunkInfo { uint32_t data_offset; uint32_t size; };
 
 // Single-pass scan of '00dc' chunks starting at MOVI_DATA_OFFSET.
@@ -123,7 +130,7 @@ static int tlsPost(WiFiClientSecure& tls, const char* body, size_t body_len, Str
 // --- Backend-specific POST ---
 
 // Claude — always compiled (primary or fallback depending on USE_GEMINI).
-static int claudePost(const char* /*model*/, const char* body, size_t body_len, String& resp) {
+static int claudePost(const char* model, const char* body, size_t body_len, String& resp) {
     WiFiClientSecure tls;
     configureTls(tls, ROOT_CA_BUNDLE);
     tls.setTimeout(10000);
@@ -136,6 +143,13 @@ static int claudePost(const char* /*model*/, const char* body, size_t body_len, 
     tls.printf("Content-Type: application/json\r\n");
     tls.printf("x-api-key: %s\r\n", CLAUDE_API_KEY);
     tls.printf("anthropic-version: 2023-06-01\r\n");
+#ifndef USE_GEMINI
+    if (CLAUDE_MODEL_BETA[0] && strcmp(model, CLAUDE_MODEL) == 0) {
+        tls.printf("anthropic-beta: %s\r\n", CLAUDE_MODEL_BETA);
+    }
+#else
+    (void)model;
+#endif
     tls.printf("Content-Length: %u\r\n\r\n", (unsigned)body_len);
     return tlsPost(tls, body, body_len, resp);
 }
@@ -178,17 +192,27 @@ static int aiPostWithRetry(const char* model, const char* body, size_t body_len,
     return code;
 }
 
+// Returns the first text block of a Claude response. Blocks are matched by type,
+// since a response can start with a (possibly empty) thinking block. A refusal
+// yields an empty string so the caller treats it as a failure.
+static String extractClaudeText(JsonDocument& doc) {
+    if (doc["stop_reason"] == "refusal") {
+        Serial.printf("ai: Claude refused (%s)\n", (const char*)(doc["stop_details"]["category"] | "unknown"));
+        return "";
+    }
+    for (JsonVariant block : doc["content"].as<JsonArray>()) {
+        if (block["type"] == "text") return block["text"] | "";
+    }
+    return "";
+}
+
 // Extract the text content from the API response JSON.
 static String extractText(JsonDocument& doc) {
 #ifdef USE_GEMINI
     return doc["candidates"][0]["content"]["parts"][0]["text"] | "";
 #else
-    return doc["content"][0]["text"] | "";
+    return extractClaudeText(doc);
 #endif
-}
-
-static String extractClaudeText(JsonDocument& doc) {
-    return doc["content"][0]["text"] | "";
 }
 
 bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String& out, String& plates) {
@@ -232,7 +256,7 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
         "{\"contents\":[{\"parts\":[");
 #else
     appendf(body, BODY_CAP, pos,
-        "{\"model\":\"%s\",\"max_tokens\":512,"
+        "{\"model\":\"%s\",\"max_tokens\":512," CLAUDE_MODEL_PARAMS
         "\"messages\":[{\"role\":\"user\",\"content\":[",
         CLAUDE_MODEL);
 #endif
