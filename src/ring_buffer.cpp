@@ -23,6 +23,7 @@ void JpegRingBuffer::push(const camera_fb_t* fb) {
     if (s.buf) {
         memcpy(s.buf, fb->buf, fb->len);
         s.len = fb->len;
+        s.t_ms = millis();
     }
     head_ = (head_ + 1) % capacity_;
     if (count_ < capacity_) count_++;
@@ -38,4 +39,10 @@ size_t JpegRingBuffer::len(size_t i) const {
     size_t start = (count_ == capacity_) ? head_ : 0;
     size_t idx = (start + i) % capacity_;
     return slots_[idx].len;
+}
+
+uint32_t JpegRingBuffer::time(size_t i) const {
+    size_t start = (count_ == capacity_) ? head_ : 0;
+    size_t idx = (start + i) % capacity_;
+    return slots_[idx].t_ms;
 }

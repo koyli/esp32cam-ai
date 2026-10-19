@@ -7,11 +7,13 @@ namespace {
 constexpr size_t HDR_SIZE = 224;        // bytes reserved before first frame
 }
 
-bool AviWriter::begin(const char* path, uint16_t w, uint16_t h, uint8_t fps) {
+bool AviWriter::begin(const char* path, uint16_t w, uint16_t h) {
     file_ = SD_MMC.open(path, FILE_WRITE);
     if (!file_) return false;
-    width_ = w; height_ = h; fps_ = fps;
+    width_ = w; height_ = h;
     frame_count_ = 0; movi_size_ = 0;
+    frame_sizes_.clear();
+    frame_sizes_.reserve(128);
 
     // Reserve space for the header — finalised in end().
     uint8_t zeros[HDR_SIZE] = {0};
@@ -32,14 +34,12 @@ bool AviWriter::writeFrame(const uint8_t* jpeg, size_t len) {
     if (len & 1) { uint8_t pad = 0; file_.write(&pad, 1); }
     movi_size_ += 8 + len + (len & 1);
     frame_count_++;
+    frame_sizes_.push_back((uint32_t)len);
     return true;
 }
 
-bool AviWriter::end() {
+bool AviWriter::end(uint32_t us_per_frame) {
     if (!file_) return false;
-
-    const uint32_t file_size = file_.position();
-    if (!file_.seek(0)) { file_.close(); return false; }
 
     auto writeFourCC = [&](const char* s) {
         file_.write(reinterpret_cast<const uint8_t*>(s), 4);
@@ -53,9 +53,26 @@ bool AviWriter::end() {
         file_.write(b, 2);
     };
 
-    const uint32_t us_per_frame      = fps_ ? 1000000UL / fps_ : 100000UL;
+    // idx1 index after the movi list, so players can seek. Offsets are relative
+    // to the 'movi' fourcc; the first chunk header follows it at offset 4.
+    writeFourCC("idx1");
+    writeU32(16 * (uint32_t)frame_sizes_.size());
+    uint32_t offset = 4;
+    for (uint32_t sz : frame_sizes_) {
+        writeFourCC("00dc");
+        writeU32(0x10);                   // AVIIF_KEYFRAME (every MJPEG frame is)
+        writeU32(offset);
+        writeU32(sz);
+        offset += 8 + sz + (sz & 1);
+    }
+    frame_sizes_.clear();
+
+    const uint32_t file_size = file_.position();
+    if (!file_.seek(0)) { file_.close(); return false; }
+
+    if (!us_per_frame) us_per_frame = 100000UL;
     const uint32_t suggested_buf     = 100000;
-    const uint32_t max_bytes_per_sec = suggested_buf * (fps_ ? fps_ : 10);
+    const uint32_t max_bytes_per_sec = (uint32_t)((uint64_t)suggested_buf * 1000000UL / us_per_frame);
 
     // RIFF
     writeFourCC("RIFF");
@@ -73,7 +90,7 @@ bool AviWriter::end() {
     writeU32(us_per_frame);
     writeU32(max_bytes_per_sec);
     writeU32(0);                      // padding granularity
-    writeU32(0);                      // flags
+    writeU32(0x10);                   // flags: AVIF_HASINDEX
     writeU32(frame_count_);
     writeU32(0);                      // initial frames
     writeU32(1);                      // streams
@@ -96,8 +113,8 @@ bool AviWriter::end() {
     writeU16(0);                      // priority
     writeU16(0);                      // language
     writeU32(0);                      // initial frames
-    writeU32(1);                      // scale
-    writeU32(fps_);                   // rate -> fps = rate/scale
+    writeU32(us_per_frame);           // scale
+    writeU32(1000000UL);              // rate -> fps = rate/scale
     writeU32(0);                      // start
     writeU32(frame_count_);           // length
     writeU32(suggested_buf);

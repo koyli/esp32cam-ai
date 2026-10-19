@@ -15,6 +15,8 @@ public:
     // Triggers motion when changed cells >= threshold.
     int update(const camera_fb_t* fb);
     bool triggered(int changed_cells) const;
+    // Forget the previous frame; the next update() becomes the new baseline.
+    void reset() { has_prev_ = false; }
     int thresholdCells() const { return (GW * GH * threshold_pct_) / 100; }
 
 private:
