@@ -224,7 +224,7 @@ void loop() {
     uint32_t now = millis();
     if (now - last_heartbeat >= 10000) {
         Serial.printf("status: %lu frames, peak changed %d/%d cells, heap %lu\n",
-                      frame_count, peak_changed, motion.thresholdCells(),
+                      (unsigned long)frame_count, peak_changed, motion.thresholdCells(),
                       (unsigned long)ESP.getFreeHeap());
         peak_changed = 0;
         last_heartbeat = now;
