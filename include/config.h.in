@@ -10,6 +10,16 @@ static const WifiCred WIFI_CREDS[] = {
     {"SSID_2", "PASS_2"},
 };
 
+// ---------------- Wi-Fi extender ---------
+// Uncomment to also run a Wi-Fi access point that forwards (NATs) its clients'
+// traffic over the upstream connection above. The AP follows the upstream
+// channel, and its subnet (EXTENDER_IP/24) must differ from the upstream one.
+// Expect a few Mbit/s shared between the AP clients and the camera's uploads.
+// #define EXTENDER_SSID         "esp32cam-ext"
+// #define EXTENDER_PASS         "CHANGE_ME_8+chars"
+// #define EXTENDER_IP           192, 168, 71, 1
+// #define EXTENDER_MAX_CLIENTS  4     // ESP32 allows up to 10
+
 // ---------------- MQTT -----------------
 #define MQTT_HOST       "broker.example.com"
 #define MQTT_PORT       8883

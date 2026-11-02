@@ -14,6 +14,7 @@
 #include "claude_client.h"
 #include "mqtt_publisher.h"
 #include "upload_client.h"
+#include "wifi_extender.h"
 
 static JpegRingBuffer ring(PRE_FRAMES);
 static MotionDetector motion(MOTION_THRESHOLD_PCT);
@@ -102,10 +103,12 @@ static bool initCamera() {
     return esp_camera_init(&c) == ESP_OK;
 }
 
-static bool initWifi() {
+// Scans for the strongest known network and associates with it.
+static bool connectSta() {
     WiFi.persistent(false);       // don't save credentials to flash
     WiFi.disconnect(true, true);  // disconnect and erase any stored AP
-    WiFi.mode(WIFI_STA);
+    // AP+STA keeps the extender's soft AP up while the station reconnects.
+    WiFi.mode(extenderEnabled() ? WIFI_AP_STA : WIFI_STA);
     WiFi.setAutoReconnect(false);
     esp_wifi_set_ps(WIFI_PS_NONE); // disable power saving — improves association reliability
 
@@ -173,6 +176,12 @@ static bool initWifi() {
     return false;
 }
 
+static bool initWifi() {
+    bool ok = connectSta();
+    extenderBegin();  // follows the station's channel; restarts after the radio reset above
+    return ok;
+}
+
 static void recordClip();
 
 static bool ensureWifi() {
@@ -210,6 +219,14 @@ void setup() {
 void loop() {
     mqtt.loop();
 
+    // As an extender, the upstream link matters even when nothing is moving:
+    // retry it periodically rather than only when a clip needs uploading.
+    static uint32_t last_wifi_check = 0;
+    if (extenderEnabled() && millis() - last_wifi_check >= 30000) {
+        last_wifi_check = millis();
+        ensureWifi();
+    }
+
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { delay(10); return; }
 
@@ -223,9 +240,9 @@ void loop() {
 
     uint32_t now = millis();
     if (now - last_heartbeat >= 10000) {
-        Serial.printf("status: %lu frames, peak changed %d/%d cells, heap %lu\n",
+        Serial.printf("status: %lu frames, peak changed %d/%d cells, heap %lu, ap clients %d\n",
                       (unsigned long)frame_count, peak_changed, motion.thresholdCells(),
-                      (unsigned long)ESP.getFreeHeap());
+                      (unsigned long)ESP.getFreeHeap(), extenderClients());
         peak_changed = 0;
         last_heartbeat = now;
     }
