@@ -1,0 +1,3 @@
+# Copy to upload-token.map (gitignored) and put your upload token in place of the
+# placeholder. It must match UPLOAD_TOKEN in include/config.h.
+"REPLACE_WITH_YOUR_TOKEN"  1;

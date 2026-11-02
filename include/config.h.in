@@ -65,7 +65,7 @@ static const WifiCred WIFI_CREDS[] = {
 
 // ---------------- Cloud upload -----------
 // Hostname of your OCI upload receiver (no https:// prefix).
-// Set UPLOAD_TOKEN to the same secret configured in nginx.
+// Set UPLOAD_TOKEN to the same secret as in server/upload-token.map.
 #define UPLOAD_HOST   "your-oci-hostname.example.com"
 #define UPLOAD_PORT   443
 #define UPLOAD_TOKEN  "REPLACE_ME"
