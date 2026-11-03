@@ -9,6 +9,11 @@ summarise it, publishes the summary over MQTT and uploads the clip.
 Copy `include/config.h.in` to `include/config.h`, fill in your credentials,
 then `pio run -t upload`.
 
+The build uses the [pioarduino](https://github.com/pioarduino/platform-espressif32)
+platform (Arduino-ESP32 3.x on ESP-IDF 5.x), which needs PlatformIO running on
+Python 3.10–3.14. If your `pio` uses a newer Python, run it through uv:
+`uvx --python 3.14 --from platformio pio run -t upload`.
+
 ## Wi-Fi extender (optional)
 
 Define `EXTENDER_SSID` and `EXTENDER_PASS` in `config.h` and the camera also

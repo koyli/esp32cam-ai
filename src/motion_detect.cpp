@@ -1,49 +1,52 @@
 #include "motion_detect.h"
-#include <esp_jpg_decode.h>
+#include <jpeg_decoder.h>
+#include <stdlib.h>
 #include <string.h>
 
 static constexpr uint8_t LUMA_STEP    = 16;
 static constexpr uint8_t MIN_LUMA     = 10;  // frames below this mean are treated as dark/invalid
 static constexpr uint8_t GLOBAL_SHIFT = 20;  // if mean luma shifts by more than this, likely auto-exposure
 
-struct DecodeCtx {
-    const uint8_t* src;
-    size_t         src_len;
-    uint32_t       sums[MotionDetector::GW * MotionDetector::GH];
-    uint32_t       counts[MotionDetector::GW * MotionDetector::GH];
-    uint16_t       img_w;
-    uint16_t       img_h;
-};
-
-static size_t jpegReader(void* arg, size_t index, uint8_t* buf, size_t len) {
-    auto* ctx = (DecodeCtx*)arg;
-    if (index >= ctx->src_len) return 0;
-    size_t n = ctx->src_len - index;
-    if (n > len) n = len;
-    if (buf) memcpy(buf, ctx->src + index, n);
-    return n;
-}
-
-// Callback receives RGB888 blocks at (x,y) of size (w,h).
-// Maps each pixel into the GW×GH luma grid and accumulates.
-static bool jpegWriter(void* arg, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t* data) {
-    auto* ctx = (DecodeCtx*)arg;
-    if (!data || ctx->img_w == 0 || ctx->img_h == 0) return true;
-
+// Decodes a JPEG at 1/8 scale to RGB888 and averages its luma over the
+// GW×GH grid. The RGB buffer is kept between calls (about 14 KB at VGA).
+static bool decodeLumaGrid(const camera_fb_t* fb, uint8_t* grid) {
     constexpr int GW = MotionDetector::GW;
     constexpr int GH = MotionDetector::GH;
 
-    for (uint16_t py = 0; py < h; ++py) {
-        for (uint16_t px = 0; px < w; ++px) {
-            const uint8_t* rgb = data + (py * w + px) * 3;
-            uint8_t luma = (uint8_t)((77u * rgb[0] + 150u * rgb[1] + 29u * rgb[2]) >> 8);
-            int col = (int)(x + px) * GW / ctx->img_w;
-            int row = (int)(y + py) * GH / ctx->img_h;
-            if ((unsigned)col < (unsigned)GW && (unsigned)row < (unsigned)GH) {
-                ctx->sums [row * GW + col] += luma;
-                ctx->counts[row * GW + col]++;
-            }
+    static uint8_t* rgb     = nullptr;
+    static size_t   rgb_cap = 0;
+    size_t need = (size_t)((fb->width + 7) / 8) * ((fb->height + 7) / 8) * 3;
+    if (need > rgb_cap) {
+        free(rgb);
+        rgb     = (uint8_t*)malloc(need);
+        rgb_cap = rgb ? need : 0;
+        if (!rgb) return false;
+    }
+
+    esp_jpeg_image_cfg_t cfg = {};
+    cfg.indata      = fb->buf;
+    cfg.indata_size = fb->len;
+    cfg.outbuf      = rgb;
+    cfg.outbuf_size = rgb_cap;
+    cfg.out_format  = JPEG_IMAGE_FORMAT_RGB888;
+    cfg.out_scale   = JPEG_IMAGE_SCALE_1_8;
+    esp_jpeg_image_output_t img = {};
+    if (esp_jpeg_decode(&cfg, &img) != ESP_OK || img.width == 0 || img.height == 0) return false;
+
+    uint32_t sums[GW * GH]   = {};
+    uint32_t counts[GW * GH] = {};
+    for (int y = 0; y < img.height; ++y) {
+        int row = y * GH / img.height;
+        const uint8_t* p = rgb + (size_t)y * img.width * 3;
+        for (int x = 0; x < img.width; ++x, p += 3) {
+            uint8_t luma = (uint8_t)((77u * p[0] + 150u * p[1] + 29u * p[2]) >> 8);
+            int cell = row * GW + x * GW / img.width;
+            sums[cell] += luma;
+            counts[cell]++;
         }
+    }
+    for (int i = 0; i < GW * GH; ++i) {
+        grid[i] = counts[i] ? (uint8_t)(sums[i] / counts[i]) : 0;
     }
     return true;
 }
@@ -54,21 +57,8 @@ MotionDetector::MotionDetector(uint8_t threshold_pct)
 }
 
 int MotionDetector::update(const camera_fb_t* fb) {
-    DecodeCtx ctx = {};
-    ctx.src     = fb->buf;
-    ctx.src_len = fb->len;
-    // JPG_SCALE_8X decodes at 1/8 size; callback coordinates are in decoded space
-    ctx.img_w   = (uint16_t)(fb->width  >> 3);
-    ctx.img_h   = (uint16_t)(fb->height >> 3);
-
-    if (esp_jpg_decode(fb->len, JPG_SCALE_8X, jpegReader, jpegWriter, &ctx) != ESP_OK) {
-        return -1;
-    }
-
     uint8_t cur[GW * GH];
-    for (int i = 0; i < GW * GH; ++i) {
-        cur[i] = ctx.counts[i] ? (uint8_t)(ctx.sums[i] / ctx.counts[i]) : 0;
-    }
+    if (!decodeLumaGrid(fb, cur)) return -1;
 
     // Compute mean luma of current frame.
     uint32_t cur_sum = 0;
