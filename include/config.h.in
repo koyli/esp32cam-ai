@@ -20,6 +20,20 @@ static const WifiCred WIFI_CREDS[] = {
 // #define EXTENDER_IP           192, 168, 71, 1
 // #define EXTENDER_MAX_CLIENTS  4     // ESP32 allows up to 10
 
+// ---------------- Trail cameras ---------
+// Uncomment to also collect photos and videos from Wi-Fi trail cameras
+// (GardePro E7/E8 style, see github.com/koyli/trailcam). At each hour in
+// TRAILCAM_HOURS (UTC), and once at boot, the device wakes every camera whose
+// Bluetooth name or address starts with a TRAILCAM_BLE_MATCH entry, joins its
+// "CAM..." Wi-Fi, copies new files to TRAILCAM_SD_DIR and deletes them from the
+// camera, then uploads them to the server's trail-camera folder. Motion capture
+// pauses, and the upstream link (and any extender clients) drops, while it runs.
+// #define TRAILCAM_WIFI_PASS   "CAMERA_WIFI_PASSWORD"
+// #define TRAILCAM_BLE_MATCH   "G_E7", "G_E8"
+// #define TRAILCAM_HOURS       0, 6, 12, 18
+// #define TRAILCAM_SD_DIR      "/trailcam"   // uploaded files move to <dir>/sent
+// #define TRAILCAM_BLE_SCAN_S  30
+
 // ---------------- MQTT -----------------
 #define MQTT_HOST       "broker.example.com"
 #define MQTT_PORT       8883

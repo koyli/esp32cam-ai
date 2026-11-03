@@ -22,6 +22,9 @@ services:
     user: "1001:1001"
     volumes:
       - /home/ubuntu/recordings:/recordings
+      # Trail-camera photos/videos from the ESP32, reviewed by trailcam-review.
+      - /home/ubuntu/capture/trailcam:/trailcam
     environment:
       - UPLOAD_DIR=/recordings
+      - TRAILCAM_DIR=/trailcam
     restart: unless-stopped

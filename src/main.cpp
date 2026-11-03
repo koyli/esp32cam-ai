@@ -5,6 +5,7 @@
 #include <esp_camera.h>
 #include <Preferences.h>
 #include <time.h>
+#include <esp_timer.h>
 
 #include "config.h"
 #include "camera_pins.h"
@@ -15,6 +16,7 @@
 #include "mqtt_publisher.h"
 #include "upload_client.h"
 #include "wifi_extender.h"
+#include "trailcam.h"
 
 static JpegRingBuffer ring(PRE_FRAMES);
 static MotionDetector motion(MOTION_THRESHOLD_PCT);
@@ -184,6 +186,59 @@ static bool initWifi() {
 
 static void recordClip();
 
+// Recording, AI calls, uploads and trail-camera runs take a long time. Drop the
+// stale frames so the next comparison isn't against a scene from a minute ago
+// (which would re-trigger) and the next clip's lead-in frames are actually from
+// just before its trigger.
+static void resetCapture() {
+    motion.reset();
+    ring.clear();
+}
+
+#ifdef TRAILCAM_WIFI_PASS
+#ifndef TRAILCAM_HOURS
+#define TRAILCAM_HOURS 0, 6, 12, 18
+#endif
+
+// True once per TRAILCAM_HOURS slot (UTC), and on the first call after boot.
+// Without a synced clock, runs are spaced evenly from boot instead.
+static bool trailcamDue() {
+    static const int hours[] = {TRAILCAM_HOURS};
+    static constexpr int N = sizeof(hours) / sizeof(hours[0]);
+    static int64_t last_slot = -1;
+
+    int64_t slot;
+    if (timeValid()) {
+        time_t now = time(nullptr);
+        int64_t day  = now / 86400;
+        int     hour = (now % 86400) / 3600;
+        int latest = -1, last_of_day = 0;
+        for (int h : hours) {
+            if (h <= hour && h > latest) latest = h;
+            if (h > last_of_day) last_of_day = h;
+        }
+        slot = latest >= 0 ? day * 24 + latest : (day - 1) * 24 + last_of_day;
+    } else {
+        slot = -2 - esp_timer_get_time() / (86400LL * 1000000 / N);  // negative: never equals a clock slot
+    }
+    if (slot == last_slot) return false;
+    last_slot = slot;
+    return true;
+}
+#else
+static bool trailcamDue() { return false; }
+#endif
+
+// Collects from the trail cameras, reconnects upstream and uploads what's new
+// (plus anything a previous run couldn't upload).
+static void collectTrailcams() {
+    Serial.println("trailcam: collection starting");
+    trailcamFetch();
+    initWifi();
+    trailcamUploadPending();
+    resetCapture();
+}
+
 static bool ensureWifi() {
     if (WiFi.status() == WL_CONNECTED) return true;
     Serial.println("wifi: disconnected, attempting reconnect");
@@ -226,6 +281,8 @@ void loop() {
         last_wifi_check = millis();
         ensureWifi();
     }
+
+    if (trailcamDue()) collectTrailcams();
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { delay(10); return; }
@@ -327,9 +384,5 @@ static void recordClip() {
     uploadFile(avi_path);
     uploadFile(txt_path);
 
-    // Recording, AI calls and uploads take a long time. Drop the stale frames so the
-    // next comparison isn't against a scene from a minute ago (which would re-trigger)
-    // and the next clip's lead-in frames are actually from just before its trigger.
-    motion.reset();
-    ring.clear();
+    resetCapture();
 }
