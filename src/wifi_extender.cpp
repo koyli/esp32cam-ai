@@ -8,13 +8,16 @@
 bool extenderEnabled() { return false; }
 void extenderBegin() {}
 int  extenderClients() { return 0; }
+void extenderPoll() {}
 
 #else
 
 #include <WiFi.h>
 #include <esp_netif.h>
+#include <esp_netif_net_stack.h>
 #include <lwip/opt.h>
 #include <dhcpserver/dhcpserver.h>
+#include <lwip/netif.h>
 
 #if ESP_ARDUINO_VERSION_MAJOR < 3
 #include <lwip/lwip_napt.h>
@@ -35,6 +38,17 @@ static_assert(sizeof(EXTENDER_PASS) - 1 >= 8, "EXTENDER_PASS must be at least 8 
 bool extenderEnabled() { return true; }
 
 int extenderClients() { return WiFi.softAPgetStationNum(); }
+
+// The AP's NAT flag doesn't survive it starting up, though enabling it reports
+// success (clients then join but get no internet), so check the flag itself.
+void extenderPoll() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    esp_netif_t* ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    auto* n = ap ? (struct netif*)esp_netif_get_netif_impl(ap) : nullptr;
+    if (!n || !netif_is_up(n) || n->napt) return;
+    bool ok = WiFi.AP.enableNAPT(true);
+    Serial.printf("extender: NAT was off, re-enabling: %s\n", ok && n->napt ? "on" : "FAILED");
+}
 
 // The soft AP's DHCP server would otherwise hand out the AP's own address as
 // the DNS server, and nothing answers DNS there. Offer the upstream resolver.
@@ -63,6 +77,7 @@ void extenderBegin() {
         Serial.println("extender: soft AP start failed");
         return;
     }
+    WiFi.AP.waitStatusBits(ESP_NETIF_STARTED_BIT, 1000);
     WiFi.softAPConfig(ap_ip, ap_ip, mask);
 
     IPAddress dns = up ? WiFi.dnsIP(0) : IPAddress(0, 0, 0, 0);

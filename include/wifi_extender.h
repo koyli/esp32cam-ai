@@ -14,3 +14,6 @@ void extenderBegin();
 
 // Number of stations currently associated with the soft AP.
 int extenderClients();
+
+// Call periodically: turns NAT back on if the AP has lost it.
+void extenderPoll();

@@ -206,13 +206,11 @@ static bool camGetOk(const char* path) {
 // camera sends chunked downloads, which writeToStream() decodes, so this asks
 // for HTTP/1.1 and doesn't read the stream itself.
 static bool download(const char* path, const char* part_path, size_t size) {
-    static const char* HEADERS[] = {"Transfer-Encoding", "Content-Length"};
     for (int attempt = 1; attempt <= 3; ++attempt) {
         camKeepAwake();
         HTTPClient http;
         http.setTimeout(IO_TIMEOUT);
         http.setReuse(false);
-        http.collectHeaders(HEADERS, 2);
         if (!http.begin(CAM_HOST, CAM_PORT, path)) return false;
         int code = http.GET();
         if (code != 200) {
@@ -230,11 +228,19 @@ static bool download(const char* path, const char* part_path, size_t size) {
         int got = http.writeToStream(&f);
         uint32_t ms = millis() - t0;
         f.close();
-        Serial.printf("trailcam: %s: got %d of %u in %lu ms (encoding \"%s\", length \"%s\")\n", path, got,
-                      (unsigned)size, (unsigned long)ms, http.header("Transfer-Encoding").c_str(),
-                      http.header("Content-Length").c_str());
         http.end();
-        if (got > 0 && (!size || (size_t)got == size)) return true;
+
+        // got counts bytes received, not stored: a failing card still reports them
+        // all, and this copy decides whether the camera's file gets deleted.
+        size_t stored = 0;
+        f = SD_MMC.open(part_path, FILE_READ);
+        if (f) {
+            stored = f.size();
+            f.close();
+        }
+        Serial.printf("trailcam: %s: got %d, stored %u of %u in %lu ms\n", path, got, (unsigned)stored,
+                      (unsigned)size, (unsigned long)ms);
+        if (got > 0 && stored == (size_t)got && (!size || stored == size)) return true;
         SD_MMC.remove(part_path);
     }
     return false;

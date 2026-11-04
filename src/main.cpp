@@ -314,6 +314,7 @@ void loop() {
         Serial.printf("status: %lu frames, peak changed %d/%d cells, heap %lu, ap clients %d\n",
                       (unsigned long)frame_count, peak_changed, motion.thresholdCells(),
                       (unsigned long)ESP.getFreeHeap(), extenderClients());
+        extenderPoll();
         peak_changed = 0;
         last_heartbeat = now;
     }
