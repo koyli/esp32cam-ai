@@ -10,6 +10,30 @@ static const WifiCred WIFI_CREDS[] = {
     {"SSID_2", "PASS_2"},
 };
 
+// ---------------- Wi-Fi extender ---------
+// Uncomment to also run a Wi-Fi access point that forwards (NATs) its clients'
+// traffic over the upstream connection above. The AP follows the upstream
+// channel, and its subnet (EXTENDER_IP/24) must differ from the upstream one.
+// Expect a few Mbit/s shared between the AP clients and the camera's uploads.
+// #define EXTENDER_SSID         "esp32cam-ext"
+// #define EXTENDER_PASS         "CHANGE_ME_8+chars"
+// #define EXTENDER_IP           192, 168, 71, 1
+// #define EXTENDER_MAX_CLIENTS  4     // ESP32 allows up to 10
+
+// ---------------- Trail cameras ---------
+// Uncomment to also collect photos and videos from Wi-Fi trail cameras
+// (GardePro E7/E8 style, see github.com/koyli/trailcam). At each hour in
+// TRAILCAM_HOURS (UTC), and once at boot, the device wakes every camera whose
+// Bluetooth name or address starts with a TRAILCAM_BLE_MATCH entry, joins its
+// "CAM..." Wi-Fi, copies new files to TRAILCAM_SD_DIR and deletes them from the
+// camera, then uploads them to the server's trail-camera folder. Motion capture
+// pauses, and the upstream link (and any extender clients) drops, while it runs.
+// #define TRAILCAM_WIFI_PASS   "CAMERA_WIFI_PASSWORD"
+// #define TRAILCAM_BLE_MATCH   "G_E7", "G_E8"
+// #define TRAILCAM_HOURS       0, 6, 12, 18
+// #define TRAILCAM_SD_DIR      "/trailcam"   // uploaded files move to <dir>/sent
+// #define TRAILCAM_BLE_SCAN_S  30
+
 // ---------------- MQTT -----------------
 #define MQTT_HOST       "broker.example.com"
 #define MQTT_PORT       8883

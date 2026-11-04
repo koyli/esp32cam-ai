@@ -5,7 +5,7 @@
 #include <WiFiClientSecure.h>
 #include <SD_MMC.h>
 
-bool uploadFile(const char* sd_path) {
+bool uploadFile(const char* sd_path, const char* kind) {
     File f = SD_MMC.open(sd_path, FILE_READ);
     if (!f) {
         Serial.printf("upload: cannot open %s\n", sd_path);
@@ -32,13 +32,15 @@ bool uploadFile(const char* sd_path) {
     tls.printf("Content-Type: application/octet-stream\r\n");
     tls.printf("Content-Length: %u\r\n", (unsigned)file_size);
     tls.printf("X-Upload-Token: %s\r\n", UPLOAD_TOKEN);
+    if (kind) tls.printf("X-Upload-Kind: %s\r\n", kind);
     tls.printf("X-Filename: %s\r\n\r\n", filename);
 
     auto* buf = (uint8_t*)malloc(2048);
     if (!buf) { tls.stop(); f.close(); return false; }
 
     size_t sent = 0;
-    uint32_t deadline = millis() + 90000;
+    // 60 s plus 50 ms per KB (20 KB/s): the old fixed 90 s was sized for clips.
+    uint32_t deadline = millis() + 60000 + file_size / 20;
     while (f.available() && millis() < deadline) {
         size_t n = f.read(buf, 2048);
         if (!n) break;
