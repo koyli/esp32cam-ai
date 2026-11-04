@@ -46,7 +46,6 @@ static const char* E7_WAKE = "TCWAKEUP";
 static const char* E8_CHAR = "6e400004-b5a3-f393-e0a9-e50e24dcca9e";
 static const char* E8_WAKE = "AT+WAKEPULSE=10\r\n";
 
-static constexpr size_t   BUF_SIZE    = 4096;
 static constexpr int      MAX_ROUNDS  = 20;     // listings per camera (60 files each)
 static constexpr uint32_t IO_TIMEOUT  = 15000;  // ms without data before a download is retried
 
@@ -203,13 +202,17 @@ static bool camGetOk(const char* path) {
     return code == 200;
 }
 
-// Streams one file to SD at part_path, retrying from scratch on a short read.
-static bool download(const char* path, const char* part_path, size_t size, uint8_t* buf) {
+// Saves one file to SD at part_path, retrying from scratch on a bad copy. The
+// camera sends chunked downloads, which writeToStream() decodes, so this asks
+// for HTTP/1.1 and doesn't read the stream itself.
+static bool download(const char* path, const char* part_path, size_t size) {
+    static const char* HEADERS[] = {"Transfer-Encoding", "Content-Length"};
     for (int attempt = 1; attempt <= 3; ++attempt) {
         camKeepAwake();
         HTTPClient http;
-        http.useHTTP10(true);
         http.setTimeout(IO_TIMEOUT);
+        http.setReuse(false);
+        http.collectHeaders(HEADERS, 2);
         if (!http.begin(CAM_HOST, CAM_PORT, path)) return false;
         int code = http.GET();
         if (code != 200) {
@@ -217,42 +220,21 @@ static bool download(const char* path, const char* part_path, size_t size, uint8
             http.end();
             continue;
         }
-        size_t expected = size ? size : (http.getSize() > 0 ? (size_t)http.getSize() : 0);
-
         File f = SD_MMC.open(part_path, FILE_WRITE);
         if (!f) {
             Serial.printf("trailcam: cannot create %s\n", part_path);
             http.end();
             return false;
         }
-        NetworkClient* s = http.getStreamPtr();
-        size_t got = 0;
-        bool disk_ok = true;
-        uint32_t last = millis();
-        while ((!expected || got < expected) && millis() - last < IO_TIMEOUT) {
-            size_t avail = s->available();
-            if (!avail) {
-                if (!s->connected()) break;
-                delay(5);
-                continue;
-            }
-            int n = s->read(buf, avail < BUF_SIZE ? avail : BUF_SIZE);
-            if (n <= 0) continue;
-            if (f.write(buf, n) != (size_t)n) { disk_ok = false; break; }
-            got += n;
-            last = millis();
-        }
+        uint32_t t0 = millis();
+        int got = http.writeToStream(&f);
+        uint32_t ms = millis() - t0;
         f.close();
+        Serial.printf("trailcam: %s: got %d of %u in %lu ms (encoding \"%s\", length \"%s\")\n", path, got,
+                      (unsigned)size, (unsigned long)ms, http.header("Transfer-Encoding").c_str(),
+                      http.header("Content-Length").c_str());
         http.end();
-
-        if (!disk_ok) {
-            Serial.println("trailcam: SD write failed (card full?)");
-            SD_MMC.remove(part_path);
-            return false;
-        }
-        if (got > 0 && (!expected || got == expected)) return true;
-        Serial.printf("trailcam: %s short read %u/%u (attempt %d/3)\n", path,
-                      (unsigned)got, (unsigned)expected, attempt);
+        if (got > 0 && (!size || (size_t)got == size)) return true;
         SD_MMC.remove(part_path);
     }
     return false;
@@ -274,7 +256,7 @@ static size_t savedSize(const char* name) {
 }
 
 // Copies everything in one listing; returns the number of files saved.
-static int fetchListing(const char* camera, uint8_t* buf) {
+static int fetchListing(const char* camera) {
     camKeepAwake();
     JsonDocument doc;
     if (!camJson("/list/detail/backward/900000/60", doc)) return 0;
@@ -304,7 +286,7 @@ static int fetchListing(const char* camera, uint8_t* buf) {
         // A copy from a run whose delete failed: just delete it from the camera.
         bool have = size && savedSize(name) == size;
         if (!have) {
-            if (!download(cam_path, part, size, buf)) continue;
+            if (!download(cam_path, part, size)) continue;
             SD_MMC.remove(path);
             if (!SD_MMC.rename(part, path)) continue;
             Serial.printf("trailcam: saved %s (%u bytes)\n", name, (unsigned)size);
@@ -317,7 +299,7 @@ static int fetchListing(const char* camera, uint8_t* buf) {
     return saved;
 }
 
-static int fetchCamera(uint8_t* buf) {
+static int fetchCamera() {
     JsonDocument doc;
     camKeepAwake();
     char camera[24] = "CAM";
@@ -332,7 +314,7 @@ static int fetchCamera(uint8_t* buf) {
 
     int total = 0;
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        int n = fetchListing(camera, buf);
+        int n = fetchListing(camera);
         total += n;
         if (n == 0) break;
     }
@@ -346,9 +328,6 @@ int trailcamFetch() {
     SD_MMC.mkdir(TRAILCAM_SD_DIR);
     SD_MMC.mkdir(TRAILCAM_SENT_DIR);
 
-    auto* buf = (uint8_t*)malloc(BUF_SIZE);
-    if (!buf) return 0;
-
     WiFi.mode(WIFI_OFF);
     Serial.printf("trailcam: Wi-Fi off, heap %lu\n", (unsigned long)ESP.getFreeHeap());
     std::vector<Cam> cams = scanCameras();
@@ -361,10 +340,9 @@ int trailcamFetch() {
         Serial.printf("trailcam: waking %s (%s)\n", cam.name.c_str(), addr.c_str());
         if (!wake(cam)) continue;
         WiFi.mode(WIFI_STA);
-        if (joinCamWifi(addr)) total += fetchCamera(buf);
+        if (joinCamWifi(addr)) total += fetchCamera();
         WiFi.mode(WIFI_OFF);
     }
-    free(buf);
     return total;
 }
 
