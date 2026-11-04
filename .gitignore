@@ -17,3 +17,4 @@ server/*.bak-*
 managed_components/
 sdkconfig.defaults
 __pycache__/
+sdkconfig.esp32cam-trailcam

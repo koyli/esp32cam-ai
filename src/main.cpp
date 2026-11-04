@@ -6,6 +6,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <esp_timer.h>
+#include <esp_sntp.h>
 
 #include "config.h"
 #include "camera_pins.h"
@@ -55,7 +56,15 @@ static void initTime() {
     configTime(0, 0, "pool.ntp.org", "time.google.com");
     uint32_t start = millis();
     while (WiFi.status() == WL_CONNECTED && !timeValid() && millis() - start < 5000) delay(100);
+    delay(2000);  // let SNTP's DNS lookup finish; see stopTime()
     Serial.printf("time: %s\n", timeValid() ? "synced" : "not synced (using boot counter)");
+}
+
+// Call before the network goes away. An SNTP DNS lookup left pending over a Wi-Fi
+// drop crashes the device: the next hostname connect clears the DNS cache, which
+// runs SNTP's callback outside the lwIP lock (assert in udp_new_ip_type).
+static void stopTime() {
+    if (esp_sntp_enabled()) esp_sntp_stop();
 }
 
 // <dir>/<id>_YYYYMMDD_HHMMSS.avi (UTC), or <dir>/<id>_b<boot>_<millis>.avi before
@@ -179,8 +188,10 @@ static bool connectSta() {
 }
 
 static bool initWifi() {
+    stopTime();
     bool ok = connectSta();
     extenderBegin();  // follows the station's channel; restarts after the radio reset above
+    if (ok) initTime();
     return ok;
 }
 
@@ -233,10 +244,14 @@ static bool trailcamDue() { return false; }
 // (plus anything a previous run couldn't upload).
 static void collectTrailcams() {
     Serial.println("trailcam: collection starting");
+    stopTime();
+    mqtt.disconnect();
     trailcamFetch();
+    Serial.println("trailcam: reconnecting upstream");
     initWifi();
     trailcamUploadPending();
     resetCapture();
+    Serial.println("trailcam: collection finished");
 }
 
 static bool ensureWifi() {
@@ -264,7 +279,6 @@ void setup() {
     if (!initWifi()) {
         Serial.println("wifi connect failed (continuing)");
     }
-    initTime();
     mqtt.begin();
 
     Serial.println("boot: recording startup clip");

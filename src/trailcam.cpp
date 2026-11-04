@@ -76,16 +76,50 @@ static bool writeWake(BLEClient* c, const char* uuid, const char* payload) {
     return false;
 }
 
-// The E8 firmware also turns up on some E7s, so try both, likeliest first.
-static bool wake(BLEClient* c, BLEAdvertisedDevice& d) {
-    if (!c->connect(&d)) {
-        Serial.printf("trailcam: BLE connect to %s failed\n", d.getAddress().toString().c_str());
-        return false;
+// Bluedroid and Wi-Fi together leave about 4 KB of internal RAM, too little to
+// run reliably, so Wi-Fi is off while Bluetooth is up and vice versa.
+struct Cam {
+    BLEAddress addr;
+    uint8_t    type;
+    String     name;
+};
+
+static std::vector<Cam> scanCameras() {
+    BLEDevice::init("");
+    Serial.printf("trailcam: Bluetooth up, heap %lu\n", (unsigned long)ESP.getFreeHeap());
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(true);  // names are in the scan response
+    scan->setInterval(100);
+    scan->setWindow(99);
+    Serial.println("trailcam: scanning Bluetooth");
+    BLEScanResults* res = scan->start(TRAILCAM_BLE_SCAN_S, false);
+
+    std::vector<Cam> cams;
+    for (int i = 0; res && i < res->getCount(); ++i) {
+        BLEAdvertisedDevice d = res->getDevice(i);
+        Serial.printf("trailcam: BLE %s \"%s\"\n", d.getAddress().toString().c_str(), d.getName().c_str());
+        if (matches(d)) cams.push_back({d.getAddress(), d.getAddressType(), d.getName()});
     }
-    bool e8 = d.getName().endsWith("G_E8");
-    bool ok = e8 ? (writeWake(c, E8_CHAR, E8_WAKE) || writeWake(c, E7_CHAR, E7_WAKE))
-                 : (writeWake(c, E7_CHAR, E7_WAKE) || writeWake(c, E8_CHAR, E8_WAKE));
-    c->disconnect();
+    scan->clearResults();
+    BLEDevice::deinit(false);  // also deletes the scan
+    return cams;
+}
+
+// The E8 firmware also turns up on some E7s, so try both, likeliest first.
+static bool wake(const Cam& cam) {
+    BLEDevice::init("");
+    BLEClient* c = BLEDevice::createClient();
+    bool ok = false;
+    if (c->connect(cam.addr, cam.type)) {
+        bool e8 = cam.name.endsWith("G_E8");
+        ok = e8 ? (writeWake(c, E8_CHAR, E8_WAKE) || writeWake(c, E7_CHAR, E7_WAKE))
+                : (writeWake(c, E7_CHAR, E7_WAKE) || writeWake(c, E8_CHAR, E8_WAKE));
+        c->disconnect();
+        delay(500);  // let the disconnect finish before the stack goes away
+    } else {
+        Serial.printf("trailcam: BLE connect to %s failed\n", cam.addr.toString().c_str());
+    }
+    BLEDevice::deinit(false);  // also deletes the client
     return ok;
 }
 
@@ -315,32 +349,21 @@ int trailcamFetch() {
     auto* buf = (uint8_t*)malloc(BUF_SIZE);
     if (!buf) return 0;
 
-    BLEDevice::init("");
-    BLEScan* scan = BLEDevice::getScan();
-    scan->setActiveScan(true);  // names are in the scan response
-    scan->setInterval(100);
-    scan->setWindow(99);
-    Serial.println("trailcam: scanning Bluetooth");
-    BLEScanResults* res = scan->start(TRAILCAM_BLE_SCAN_S, false);
-
-    std::vector<BLEAdvertisedDevice> cams;
-    for (int i = 0; res && i < res->getCount(); ++i) {
-        BLEAdvertisedDevice d = res->getDevice(i);
-        if (matches(d)) cams.push_back(d);
-    }
-    scan->clearResults();
-    Serial.printf("trailcam: %u camera(s) found\n", (unsigned)cams.size());
+    WiFi.mode(WIFI_OFF);
+    Serial.printf("trailcam: Wi-Fi off, heap %lu\n", (unsigned long)ESP.getFreeHeap());
+    std::vector<Cam> cams = scanCameras();
+    Serial.printf("trailcam: %u camera(s) found, heap %lu\n", (unsigned)cams.size(),
+                  (unsigned long)ESP.getFreeHeap());
 
     int total = 0;
-    BLEClient* client = cams.empty() ? nullptr : BLEDevice::createClient();
-    for (auto& d : cams) {
-        String addr = d.getAddress().toString();
-        Serial.printf("trailcam: waking %s (%s)\n", d.getName().c_str(), addr.c_str());
-        if (!wake(client, d)) continue;
+    for (const Cam& cam : cams) {
+        String addr = cam.addr.toString();
+        Serial.printf("trailcam: waking %s (%s)\n", cam.name.c_str(), addr.c_str());
+        if (!wake(cam)) continue;
+        WiFi.mode(WIFI_STA);
         if (joinCamWifi(addr)) total += fetchCamera(buf);
-        WiFi.disconnect();
+        WiFi.mode(WIFI_OFF);
     }
-    BLEDevice::deinit(false);  // frees the stack (and client) so TLS has the heap back
     free(buf);
     return total;
 }
