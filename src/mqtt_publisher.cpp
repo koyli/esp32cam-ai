@@ -21,18 +21,17 @@ bool MqttPublisher::begin() {
 static bool ensureConnected() {
     if (client.connected()) return true;
     if (WiFi.status() != WL_CONNECTED) return false;
-    // Rate-limit reconnect attempts, measured from the end of the last one
-    // since it can take several seconds.
-    static uint32_t last_attempt = 0;
-    static bool     attempted    = false;
-    if (attempted && millis() - last_attempt < 60000) return false;
+    // After a failure, wait before retrying: each attempt blocks the main loop.
+    static uint32_t last_failure = 0;
+    static bool     failed       = false;
+    if (failed && millis() - last_failure < 60000) return false;
     Serial.println("mqtt: reconnecting");
     uint32_t t0 = millis();
     bool ok = client.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS);
-    last_attempt = millis();
-    attempted    = true;
+    last_failure = millis();
+    failed       = !ok;
     Serial.printf("mqtt: %s (state %d) in %lu ms\n", ok ? "connected" : "failed", client.state(),
-                  (unsigned long)(last_attempt - t0));
+                  (unsigned long)(last_failure - t0));
     return ok;
 }
 

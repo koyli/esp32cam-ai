@@ -370,6 +370,9 @@ static void recordClip() {
 
     ensureWifi();
 
+    // Only one TLS connection fits in internal RAM, so MQTT holds one just to publish.
+    mqtt.disconnect();
+
     String summary, plates;
     if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
         summary = "{\"description\":\"(ai summary unavailable)\",\"has_vehicle\":false,\"plates\":[]}"; // file injected below
@@ -395,6 +398,7 @@ static void recordClip() {
         mqtt.publish(MQTT_PLATES_TOPIC, plates.c_str());
     }
 
+    mqtt.disconnect();
     uploadFile(avi_path);
     uploadFile(txt_path);
 
