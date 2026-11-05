@@ -195,6 +195,10 @@ static bool initWifi() {
     return ok;
 }
 
+#ifndef MOTION_COOLDOWN_S
+#define MOTION_COOLDOWN_S 60
+#endif
+
 static void recordClip();
 
 // Recording, AI calls, uploads and trail-camera runs take a long time. Drop the
@@ -322,8 +326,10 @@ void loop() {
     ring.push(fb);
     esp_camera_fb_return(fb);
 
-    if (motion.triggered(changed)) {
+    static uint32_t last_clip_end = 0;
+    if (motion.triggered(changed) && now - last_clip_end >= MOTION_COOLDOWN_S * 1000UL) {
         recordClip();
+        last_clip_end = millis();
     }
 }
 

@@ -76,7 +76,7 @@ static const WifiCred WIFI_CREDS[] = {
 // Ring buffer holds the most recent PRE_FRAMES; on a motion trigger we also
 // record POST_FRAMES afterward, so each AVI contains PRE_FRAMES + POST_FRAMES.
 #define PRE_FRAMES        30
-#define POST_FRAMES       60
+#define POST_FRAMES       140
 
 // Frames sampled (evenly) from each AVI for the AI API call.
 #define CLAUDE_SAMPLE_FRAMES  4
@@ -85,6 +85,9 @@ static const WifiCred WIFI_CREDS[] = {
 // A frame whose downsampled luma differs from the previous by more than this
 // fraction of pixels triggers a recording.
 #define MOTION_THRESHOLD_PCT  5
+
+// Seconds after a clip finishes before motion can trigger another.
+#define MOTION_COOLDOWN_S     60
 
 // SD card path for recordings and summaries.
 #define SD_RECORDINGS_DIR     "/recordings"
