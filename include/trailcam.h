@@ -15,3 +15,6 @@ int trailcamFetch();
 // Uploads trail-camera files on SD that haven't been uploaded yet, moving each
 // into the "sent" folder once the server has it. Needs the upstream connection.
 void trailcamUploadPending();
+
+// Folder of files that have reached the server, or nullptr when disabled.
+const char* trailcamSentDir();

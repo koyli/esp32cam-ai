@@ -1,7 +1,10 @@
 #pragma once
 
+// Rejected: the server will never accept this file, so sending it again is
+// pointless. Failed: anything else, so it's worth trying again later.
+enum class UploadResult { Ok, Rejected, Failed };
+
 // Upload a file from SD card to the OCI receiver, streaming in chunks.
-// Returns true on HTTP 200/201. Silent fail — caller should not treat
-// upload failure as fatal. kind, if given, picks a different destination
-// folder on the server (e.g. "trailcam").
-bool uploadFile(const char* sd_path, const char* kind = nullptr);
+// kind, if given, picks a different destination folder on the server
+// (e.g. "trailcam").
+UploadResult uploadFile(const char* sd_path, const char* kind = nullptr);

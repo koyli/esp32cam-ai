@@ -15,6 +15,7 @@
 #include "avi_writer.h"
 #include "claude_client.h"
 #include "mqtt_publisher.h"
+#include "clip_queue.h"
 #include "upload_client.h"
 #include "wifi_extender.h"
 #include "trailcam.h"
@@ -195,6 +196,10 @@ static bool initWifi() {
     return ok;
 }
 
+#ifndef MOTION_COOLDOWN_S
+#define MOTION_COOLDOWN_S 60
+#endif
+
 static void recordClip();
 
 // Recording, AI calls, uploads and trail-camera runs take a long time. Drop the
@@ -246,6 +251,7 @@ static void collectTrailcams() {
     Serial.println("trailcam: collection starting");
     stopTime();
     mqtt.disconnect();
+    sdPrune();
     trailcamFetch();
     Serial.println("trailcam: reconnecting upstream");
     initWifi();
@@ -260,6 +266,15 @@ static bool ensureWifi() {
     return initWifi();
 }
 
+static void sendQueuedClip() {
+    if (!clipQueueDue()) return;
+    ensureWifi();
+    // Only one TLS connection fits in internal RAM.
+    mqtt.disconnect();
+    clipQueueSend();
+    resetCapture();
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("\nesp32cam-ai boot");
@@ -272,6 +287,7 @@ void setup() {
     if (!SD_MMC.exists(SD_RECORDINGS_DIR)) {
         SD_MMC.mkdir(SD_RECORDINGS_DIR);
     }
+    SD_MMC.mkdir(SD_PENDING_DIR);
     if (!initCamera()) {
         Serial.println("camera init failed");
         while (true) delay(1000);
@@ -292,11 +308,12 @@ void loop() {
     // retry it periodically rather than only when a clip needs uploading.
     static uint32_t last_wifi_check = 0;
     if (extenderEnabled() && millis() - last_wifi_check >= 30000) {
-        last_wifi_check = millis();
         ensureWifi();
+        last_wifi_check = millis();  // from the end: a failed reconnect takes longer than the interval
     }
 
     if (trailcamDue()) collectTrailcams();
+    sendQueuedClip();
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { delay(10); return; }
@@ -322,13 +339,17 @@ void loop() {
     ring.push(fb);
     esp_camera_fb_return(fb);
 
-    if (motion.triggered(changed)) {
+    static uint32_t last_clip_end = 0;
+    if (motion.triggered(changed) && now - last_clip_end >= MOTION_COOLDOWN_S * 1000UL) {
         recordClip();
+        sendQueuedClip();
+        last_clip_end = millis();
     }
 }
 
 // Captures POST_FRAMES additional frames, writes the AVI containing the ring
-// buffer + new frames, asks Claude for a summary, saves it, publishes via MQTT.
+// buffer + new frames, asks Claude for a summary, saves it, publishes via MQTT
+// and queues both files for upload.
 static void recordClip() {
     char avi_path[64];
     makeClipPath(avi_path, sizeof(avi_path));
@@ -369,18 +390,27 @@ static void recordClip() {
                   us_per_frame ? 1e6f / us_per_frame : 0.0f);
     w.end(us_per_frame);
 
+    // Queue it straight away, so a power cut from here on can't lose the upload.
+    char queued[72];
+    snprintf(queued, sizeof(queued), "%s%s", SD_PENDING_DIR, strrchr(avi_path, '/'));
+    const char* clip = queued;
+    if (!SD_MMC.rename(avi_path, queued)) {
+        Serial.printf("motion: cannot queue %s\n", avi_path);
+        clip = avi_path;
+    }
+
     ensureWifi();
 
     // Only one TLS connection fits in internal RAM, so MQTT holds one just to publish.
     mqtt.disconnect();
 
     String summary, plates;
-    if (!claude.summarise(avi_path, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
+    if (!claude.summarise(clip, CLAUDE_SAMPLE_FRAMES, summary, plates)) {
         summary = "{\"description\":\"(ai summary unavailable)\",\"has_vehicle\":false,\"plates\":[]}"; // file injected below
     }
 
     char txt_path[80];
-    snprintf(txt_path, sizeof(txt_path), "%s.txt", avi_path);
+    snprintf(txt_path, sizeof(txt_path), "%s.txt", clip);
     File t = SD_MMC.open(txt_path, FILE_WRITE);
     if (t) { t.print(summary); t.close(); }
 
@@ -399,9 +429,7 @@ static void recordClip() {
         mqtt.publish(MQTT_PLATES_TOPIC, plates.c_str());
     }
 
-    mqtt.disconnect();
-    uploadFile(avi_path);
-    uploadFile(txt_path);
-
+    clipQueueNotify();
+    sdPrune();
     resetCapture();
 }

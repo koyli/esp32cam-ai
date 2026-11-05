@@ -5,11 +5,11 @@
 #include <WiFiClientSecure.h>
 #include <SD_MMC.h>
 
-bool uploadFile(const char* sd_path, const char* kind) {
+UploadResult uploadFile(const char* sd_path, const char* kind) {
     File f = SD_MMC.open(sd_path, FILE_READ);
     if (!f) {
         Serial.printf("upload: cannot open %s\n", sd_path);
-        return false;
+        return UploadResult::Failed;
     }
     const size_t file_size = f.size();
 
@@ -20,11 +20,12 @@ bool uploadFile(const char* sd_path, const char* kind) {
 
     WiFiClientSecure tls;
     configureTls(tls, UPLOAD_CA_CERT);
-    tls.setTimeout(30000);
+    tls.setTimeout(20000);
+    tls.setHandshakeTimeout(20);  // seconds; the 120 s default would stop motion detection for too long
     if (!tls.connect(UPLOAD_HOST, UPLOAD_PORT)) {
         Serial.println("upload: TLS connect failed");
         f.close();
-        return false;
+        return UploadResult::Failed;
     }
 
     tls.printf("POST /upload HTTP/1.0\r\n");
@@ -36,7 +37,7 @@ bool uploadFile(const char* sd_path, const char* kind) {
     tls.printf("X-Filename: %s\r\n\r\n", filename);
 
     auto* buf = (uint8_t*)malloc(2048);
-    if (!buf) { tls.stop(); f.close(); return false; }
+    if (!buf) { tls.stop(); f.close(); return UploadResult::Failed; }
 
     size_t sent = 0;
     // 60 s plus 50 ms per KB (20 KB/s): the old fixed 90 s was sized for clips.
@@ -54,6 +55,10 @@ bool uploadFile(const char* sd_path, const char* kind) {
     free(buf);
     f.close();
     Serial.printf("upload: sent %u/%u bytes\n", (unsigned)sent, (unsigned)file_size);
+    if (sent != file_size) {
+        tls.stop();  // no reply is coming for a partial body
+        return UploadResult::Failed;
+    }
 
     uint32_t t0 = millis();
     while (!tls.available() && millis() - t0 < 15000) delay(10);
@@ -63,5 +68,7 @@ bool uploadFile(const char* sd_path, const char* kind) {
     Serial.printf("upload: response: %s\n", status.c_str());
 
     int code = status.length() >= 12 ? status.substring(9, 12).toInt() : 0;
-    return code == 200 || code == 201;
+    if (code == 200 || code == 201) return UploadResult::Ok;
+    if (code == 400 || code == 413) return UploadResult::Rejected;  // bad name, too big
+    return UploadResult::Failed;
 }

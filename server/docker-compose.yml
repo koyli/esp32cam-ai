@@ -24,7 +24,10 @@ services:
       - /home/ubuntu/recordings:/recordings
       # Trail-camera photos/videos from the ESP32, reviewed by trailcam-review.
       - /home/ubuntu/capture/trailcam:/trailcam
+      # Motion clips from the ESP32, also reviewed by trailcam-review.
+      - /home/ubuntu/capture/motion/esp32cam:/motion
     environment:
       - UPLOAD_DIR=/recordings
       - TRAILCAM_DIR=/trailcam
+      - MOTION_DIR=/motion
     restart: unless-stopped

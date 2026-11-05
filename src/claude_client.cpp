@@ -204,6 +204,14 @@ static const char*    PRIMARY_PARAMS    = CLAUDE_MODEL_PARAMS;
 static const char*    PLATES_MODEL      = CLAUDE_PLATES_MODEL;
 #endif
 
+// An empty key in config.h skips that API.
+static constexpr bool HAVE_CLAUDE_KEY = CLAUDE_API_KEY[0] != 0;
+#ifdef USE_GEMINI
+static constexpr bool HAVE_PRIMARY_KEY = GEMINI_API_KEY[0] != 0;
+#else
+static constexpr bool HAVE_PRIMARY_KEY = HAVE_CLAUDE_KEY;
+#endif
+
 static const char* SCENE_PROMPT =
     "Analyse these frames and respond with ONLY valid JSON in this exact format: "
     "{\\\"description\\\": \\\"brief scene description\\\", "
@@ -331,6 +339,11 @@ static String joinPlates(JsonDocument& inner) {
 }
 
 bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String& out, String& plates) {
+    if (!HAVE_PRIMARY_KEY && !HAVE_CLAUDE_KEY) {
+        Serial.println("ai: no API keys set, skipping");
+        return false;
+    }
+
     PsramBuf body(BODY_CAP);
     PsramBuf mid_frame(JPEG_BUF_SIZE);  // middle sample, reused for the single-image calls
     if (!body.p || !mid_frame.p) {
@@ -396,13 +409,18 @@ bool ClaudeClient::summarise(const char* avi_path, uint8_t sample_count, String&
     String resp;
     String text;
     JsonDocument scene;
-    int code = aiPostWithRetry(PRIMARY_MODEL, req, pos, resp);
+    int code = HAVE_PRIMARY_KEY ? aiPostWithRetry(PRIMARY_MODEL, req, pos, resp) : 0;
 
 #ifdef USE_GEMINI
-    // Fallback: if Gemini failed, one Claude Haiku call with the middle frame
-    // (no separate plate-reading call).
+    // Fallback: if Gemini failed or has no key, one Claude Haiku call with the
+    // middle frame (no separate plate-reading call).
     if (code != 200 || !resp.length()) {
-        Serial.println("ai: Gemini failed, falling back to Claude Haiku");
+        if (!HAVE_CLAUDE_KEY) {
+            Serial.println("ai: Gemini failed, no Claude key to fall back on");
+            return false;
+        }
+        Serial.println(HAVE_PRIMARY_KEY ? "ai: Gemini failed, falling back to Claude Haiku"
+                                        : "ai: no Gemini key, using Claude Haiku");
         resp = "";
         if (!mid_len || !buildSingleImageRequest(req, pos, false, CLAUDE_HAIKU_MODEL, 512, "",
                                                  mid_frame.as<uint8_t>(), mid_len, SCENE_PROMPT)) {

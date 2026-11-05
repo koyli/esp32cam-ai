@@ -46,6 +46,8 @@ static const WifiCred WIFI_CREDS[] = {
 // ---------------- AI backend -----------
 // Comment out USE_GEMINI to use Claude as primary (instead of Gemini).
 // When USE_GEMINI is set, Claude Haiku is used as a fallback if Gemini fails.
+// Leave an API key empty ("") to skip that API. With no keys at all, clips are
+// still recorded, published and uploaded, without an AI summary.
 #define USE_GEMINI
 
 // Claude — always present (primary when USE_GEMINI is not set, fallback otherwise).
@@ -74,7 +76,7 @@ static const WifiCred WIFI_CREDS[] = {
 // Ring buffer holds the most recent PRE_FRAMES; on a motion trigger we also
 // record POST_FRAMES afterward, so each AVI contains PRE_FRAMES + POST_FRAMES.
 #define PRE_FRAMES        30
-#define POST_FRAMES       60
+#define POST_FRAMES       150
 
 // Frames sampled (evenly) from each AVI for the AI API call.
 #define CLAUDE_SAMPLE_FRAMES  4
@@ -84,8 +86,14 @@ static const WifiCred WIFI_CREDS[] = {
 // fraction of pixels triggers a recording.
 #define MOTION_THRESHOLD_PCT  5
 
+// Seconds after a clip finishes before motion can trigger another.
+#define MOTION_COOLDOWN_S     60
+
 // SD card path for recordings and summaries.
 #define SD_RECORDINGS_DIR     "/recordings"
+
+// Uploaded files are deleted from the SD card to keep this much space free.
+#define SD_MIN_FREE_MB        200
 
 // ---------------- Cloud upload -----------
 // Hostname of your OCI upload receiver (no https:// prefix).
