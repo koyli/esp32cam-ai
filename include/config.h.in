@@ -46,6 +46,8 @@ static const WifiCred WIFI_CREDS[] = {
 // ---------------- AI backend -----------
 // Comment out USE_GEMINI to use Claude as primary (instead of Gemini).
 // When USE_GEMINI is set, Claude Haiku is used as a fallback if Gemini fails.
+// Leave an API key empty ("") to skip that API. With no keys at all, clips are
+// still recorded, published and uploaded, without an AI summary.
 #define USE_GEMINI
 
 // Claude — always present (primary when USE_GEMINI is not set, fallback otherwise).
