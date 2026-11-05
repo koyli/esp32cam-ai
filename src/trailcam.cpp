@@ -8,6 +8,7 @@
 bool trailcamEnabled() { return false; }
 int  trailcamFetch() { return 0; }
 void trailcamUploadPending() {}
+const char* trailcamSentDir() { return nullptr; }
 
 #else
 
@@ -366,7 +367,9 @@ void trailcamUploadPending() {
     int sent = 0;
     for (const String& name : names) {
         String path = String(TRAILCAM_SD_DIR "/") + name;
-        if (!uploadFile(path.c_str(), "trailcam")) continue;
+        UploadResult r = uploadFile(path.c_str(), "trailcam");
+        if (r == UploadResult::Failed) break;  // the rest would each wait out the same timeouts
+        if (r == UploadResult::Rejected) continue;
         String done = String(TRAILCAM_SENT_DIR "/") + name;
         SD_MMC.remove(done.c_str());
         SD_MMC.rename(path.c_str(), done.c_str());
@@ -374,5 +377,7 @@ void trailcamUploadPending() {
     }
     if (!names.empty()) Serial.printf("trailcam: uploaded %d/%u\n", sent, (unsigned)names.size());
 }
+
+const char* trailcamSentDir() { return TRAILCAM_SENT_DIR; }
 
 #endif

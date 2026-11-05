@@ -92,6 +92,9 @@ static const WifiCred WIFI_CREDS[] = {
 // SD card path for recordings and summaries.
 #define SD_RECORDINGS_DIR     "/recordings"
 
+// Uploaded files are deleted from the SD card to keep this much space free.
+#define SD_MIN_FREE_MB        200
+
 // ---------------- Cloud upload -----------
 // Hostname of your OCI upload receiver (no https:// prefix).
 // Set UPLOAD_TOKEN to the same secret as in server/upload-token.map.

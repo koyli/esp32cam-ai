@@ -12,6 +12,7 @@ static PubSubClient     client(net);
 bool MqttPublisher::begin() {
     configureTls(net, MQTT_CA_CERT);
     net.setTimeout(10000);
+    net.setHandshakeTimeout(20);  // seconds; the 120 s default would block the main loop
     client.setServer(MQTT_HOST, MQTT_PORT);
     client.setBufferSize(2048);
     client.setSocketTimeout(5);  // the connect blocks the main loop, and so motion detection

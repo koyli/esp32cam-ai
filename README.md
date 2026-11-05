@@ -14,6 +14,20 @@ platform (Arduino-ESP32 3.x on ESP-IDF 5.x), which needs PlatformIO running on
 Python 3.10–3.14. If your `pio` uses a newer Python, run it through uv:
 `uvx --python 3.14 --from platformio pio run -t upload`.
 
+## Poor connections
+
+Clips wait in `/recordings/pending` on the SD card until the server confirms
+them, then move up to `/recordings`. Motion detection stops during an upload,
+so files go one at a time. After a failure the camera waits 5 minutes before
+trying again, doubling up to an hour, and a new clip waits its turn. Partial
+uploads aren't resumed, so a clip needs a link that can finish it: about
+14 KB/s for a 2.6 MB clip. Trail-camera files stay queued too, and are retried
+at the next collection.
+
+The oldest uploaded files are deleted when the card has less than
+`SD_MIN_FREE_MB` free. Files still waiting to upload are never deleted, so a
+very long outage can fill the card.
+
 ## Wi-Fi extender (optional)
 
 Define `EXTENDER_SSID` and `EXTENDER_PASS` in `config.h` and the camera also
