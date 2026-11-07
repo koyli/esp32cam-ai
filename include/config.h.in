@@ -34,6 +34,11 @@ static const WifiCred WIFI_CREDS[] = {
 // #define TRAILCAM_SD_DIR      "/trailcam"   // uploaded files move to <dir>/sent
 // #define TRAILCAM_BLE_SCAN_S  30
 
+// Flashes 5 times if Wi-Fi fails at boot. GPIO4 is the white flash LED. For the
+// small red LED on the back of the board, use 33 and LOW.
+#define WIFI_FAIL_LED_PIN  4
+#define WIFI_FAIL_LED_ON   HIGH
+
 // ---------------- MQTT -----------------
 #define MQTT_HOST       "broker.example.com"
 #define MQTT_PORT       8883

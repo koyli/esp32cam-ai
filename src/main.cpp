@@ -199,6 +199,10 @@ static bool initWifi() {
 #ifndef MOTION_COOLDOWN_S
 #define MOTION_COOLDOWN_S 60
 #endif
+#ifndef WIFI_FAIL_LED_PIN
+#define WIFI_FAIL_LED_PIN 4
+#define WIFI_FAIL_LED_ON  HIGH
+#endif
 
 static void recordClip();
 
@@ -266,6 +270,17 @@ static bool ensureWifi() {
     return initWifi();
 }
 
+// Five flashes so a failed connection shows without a serial cable.
+static void blinkWifiFailed() {
+    pinMode(WIFI_FAIL_LED_PIN, OUTPUT);
+    for (int i = 0; i < 5; ++i) {
+        digitalWrite(WIFI_FAIL_LED_PIN, WIFI_FAIL_LED_ON);
+        delay(150);
+        digitalWrite(WIFI_FAIL_LED_PIN, !WIFI_FAIL_LED_ON);
+        delay(350);
+    }
+}
+
 static void sendQueuedClip() {
     if (!clipQueueDue()) return;
     ensureWifi();
@@ -294,6 +309,7 @@ void setup() {
     }
     if (!initWifi()) {
         Serial.println("wifi connect failed (continuing)");
+        blinkWifiFailed();
     }
     mqtt.begin();
 
