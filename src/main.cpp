@@ -199,6 +199,12 @@ static bool initWifi() {
 #ifndef MOTION_COOLDOWN_S
 #define MOTION_COOLDOWN_S 60
 #endif
+#ifndef IDLE_FPS
+#define IDLE_FPS 2
+#endif
+#ifndef CLIP_FPS
+#define CLIP_FPS 15
+#endif
 #ifndef WIFI_FAIL_LED_PIN
 #define WIFI_FAIL_LED_PIN 4
 #define WIFI_FAIL_LED_ON  HIGH
@@ -331,6 +337,11 @@ void loop() {
     if (trailcamDue()) collectTrailcams();
     sendQueuedClip();
 
+    // Idle at a low rate: decoding every frame is what keeps the CPU busy.
+    static uint32_t last_frame = 0;
+    if (millis() - last_frame < 1000 / IDLE_FPS) { delay(10); return; }
+    last_frame = millis();
+
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { delay(10); return; }
 
@@ -374,18 +385,22 @@ static void recordClip() {
     AviWriter w;
     if (!w.begin(avi_path, 640, 480)) return;
 
-    // Pre-trigger frames arrive at the main loop's rate (which includes motion
-    // decoding). Space the post-trigger frames at the same interval so the whole
-    // clip plays back at a consistent speed.
-    const size_t pre = ring.size();
-    uint32_t interval_ms = 100;
-    if (pre >= 2) interval_ms = (ring.time(pre - 1) - ring.time(0)) / (pre - 1);
+    // Pre-trigger frames are IDLE_FPS apart and an AVI has one frame rate, so
+    // each is repeated to make the lead-in play at the same speed as the rest.
+    const size_t   pre         = ring.size();
+    const uint32_t interval_ms = 1000 / CLIP_FPS;
+    uint32_t repeat = 1;
+    if (pre >= 2) {
+        uint32_t gap = (ring.time(pre - 1) - ring.time(0)) / (pre - 1);
+        repeat = max(1UL, (unsigned long)((gap + interval_ms / 2) / interval_ms));
+    }
 
     uint32_t frames  = 0;
     uint32_t first_t = 0, last_t = 0;
     for (size_t i = 0; i < pre; ++i) {
-        w.writeFrame(ring.data(i), ring.len(i));
-        if (!frames++) first_t = ring.time(i);
+        for (uint32_t r = 0; r < repeat; ++r) w.writeFrame(ring.data(i), ring.len(i));
+        if (!frames) first_t = ring.time(i);
+        frames += repeat;
         last_t = ring.time(i);
     }
     for (int i = 0; i < POST_FRAMES; ++i) {
