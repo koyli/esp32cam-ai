@@ -78,9 +78,13 @@ static const WifiCred WIFI_CREDS[] = {
 #endif
 
 // ---------------- Capture --------------
-// Ring buffer holds the most recent PRE_FRAMES; on a motion trigger we also
-// record POST_FRAMES afterward, so each AVI contains PRE_FRAMES + POST_FRAMES.
-#define PRE_FRAMES        30
+// Frames per second checked for motion while idle, and recorded after a trigger.
+#define IDLE_FPS          2
+#define CLIP_FPS          15
+
+// Ring buffer holds the most recent PRE_FRAMES, taken at IDLE_FPS; on a motion
+// trigger we also record POST_FRAMES afterward, at CLIP_FPS.
+#define PRE_FRAMES        4
 #define POST_FRAMES       150
 
 // Frames sampled (evenly) from each AVI for the AI API call.
