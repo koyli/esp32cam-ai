@@ -6,8 +6,7 @@
 #ifndef TRAILCAM_WIFI_PASS
 
 bool trailcamEnabled() { return false; }
-int  trailcamFetch() { return 0; }
-void trailcamUploadPending() {}
+void trailcamCollect(bool (*)()) {}
 const char* trailcamSentDir() { return nullptr; }
 
 #else
@@ -19,6 +18,7 @@ const char* trailcamSentDir() { return nullptr; }
 #include <BLEDevice.h>
 #include <vector>
 
+#include "clip_queue.h"
 #include "upload_client.h"
 
 #ifndef TRAILCAM_BUILD
@@ -32,6 +32,15 @@ const char* trailcamSentDir() { return nullptr; }
 #endif
 #ifndef TRAILCAM_BLE_SCAN_S
 #define TRAILCAM_BLE_SCAN_S 30
+#endif
+#ifndef TRAILCAM_BATCH_MB
+#define TRAILCAM_BATCH_MB 100
+#endif
+#ifndef TRAILCAM_MAX_MIN
+#define TRAILCAM_MAX_MIN 30
+#endif
+#ifndef SD_MIN_FREE_MB
+#define SD_MIN_FREE_MB 200
 #endif
 #define TRAILCAM_SENT_DIR TRAILCAM_SD_DIR "/sent"
 
@@ -247,30 +256,47 @@ static bool download(const char* path, const char* part_path, size_t size) {
     return false;
 }
 
-// Size of an already-saved copy (pending or sent), or 0.
-static size_t savedSize(const char* name) {
+// Size of name in dir, or -1 if it isn't there.
+static long sizeIn(const char* dir, const char* name) {
     char p[96];
-    for (const char* dir : {TRAILCAM_SD_DIR, TRAILCAM_SENT_DIR}) {
-        snprintf(p, sizeof(p), "%s/%s", dir, name);
-        File f = SD_MMC.open(p, FILE_READ);
-        if (f) {
-            size_t n = f.size();
-            f.close();
-            return n;
-        }
-    }
-    return 0;
+    snprintf(p, sizeof(p), "%s/%s", dir, name);
+    File f = SD_MMC.open(p, FILE_READ);
+    if (!f) return -1;
+    long n = f.size();
+    f.close();
+    return n;
 }
 
-// Copies everything in one listing; returns the number of files saved.
-static int fetchListing(const char* camera) {
+struct Batch {
+    uint64_t bytes = 0;      // copied this time
+    int      saved = 0;
+    bool     full  = false;  // left files on the camera for the next batch
+};
+
+static bool roomFor(size_t size, const Batch& b, uint32_t started) {
+    if (b.bytes + size > ((uint64_t)TRAILCAM_BATCH_MB << 20)) return false;
+    if (millis() - started >= TRAILCAM_MAX_MIN * 60000UL) return false;
+    uint64_t free = SD_MMC.totalBytes() - SD_MMC.usedBytes();
+    return free >= ((uint64_t)SD_MIN_FREE_MB << 20) + size;
+}
+
+// One listing: deletes from the camera what the server already has, and copies
+// new files while the batch has room. Returns the number deleted.
+//
+// A file is deleted only if "sent" (which holds only files the server
+// confirmed) has it under the same name and size. The name carries camera,
+// time, id and type, and the delete follows the listing within seconds, so it
+// can't hit a different file: if another collector (a second ESP32, or the
+// Linux client) took the file first, the id is gone from the listing or no
+// longer matches, and nothing is deleted.
+static int fetchListing(const char* camera, Batch& b, uint32_t started) {
     camKeepAwake();
     JsonDocument doc;
     if (!camJson("/list/detail/backward/900000/60", doc)) return 0;
     JsonArray items = doc["data"].as<JsonArray>();
     Serial.printf("trailcam: %s lists %u files\n", camera, (unsigned)items.size());
 
-    int saved = 0;
+    int deleted = 0;
     for (JsonObject item : items) {
         long        id   = item["id"] | -1L;
         int         type = item["type"] | 0;
@@ -290,23 +316,33 @@ static int fetchListing(const char* camera) {
         snprintf(part, sizeof(part), "%s/.%s.part", TRAILCAM_SD_DIR, name);
         snprintf(cam_path, sizeof(cam_path), "/file/%ld/%s", id, ext);
 
-        // A copy from a run whose delete failed: just delete it from the camera.
-        bool have = size && savedSize(name) == size;
-        if (!have) {
-            if (!download(cam_path, part, size)) continue;
-            SD_MMC.remove(path);
-            if (!SD_MMC.rename(part, path)) continue;
-            Serial.printf("trailcam: saved %s (%u bytes)\n", name, (unsigned)size);
-            ++saved;
+        if (sizeIn(TRAILCAM_SENT_DIR, name) == (long)size) {
+            char del[48];
+            snprintf(del, sizeof(del), "/cmd/delete/%ld/%s", id, ext);
+            if (camGetOk(del)) {
+                Serial.printf("trailcam: deleted %s from camera (server has it)\n", name);
+                ++deleted;
+            } else {
+                Serial.printf("trailcam: delete of %s on camera failed\n", name);
+            }
+            continue;
         }
-        char del[48];
-        snprintf(del, sizeof(del), "/cmd/delete/%ld/%s", id, ext);
-        if (!camGetOk(del)) Serial.printf("trailcam: delete of %s on camera failed\n", name);
+        if (sizeIn(TRAILCAM_SD_DIR, name) == (long)size) continue;  // copied, not uploaded yet
+        if (!roomFor(size, b, started)) {
+            b.full = true;
+            continue;
+        }
+        if (!download(cam_path, part, size)) continue;
+        SD_MMC.remove(path);
+        if (!SD_MMC.rename(part, path)) continue;
+        Serial.printf("trailcam: saved %s (%u bytes)\n", name, (unsigned)size);
+        b.bytes += size;
+        ++b.saved;
     }
-    return saved;
+    return deleted;
 }
 
-static int fetchCamera() {
+static void fetchCamera(Batch& b, uint32_t started) {
     JsonDocument doc;
     camKeepAwake();
     char camera[24] = "CAM";
@@ -319,43 +355,19 @@ static int fetchCamera() {
         if (j) camera[j] = 0;
     }
 
-    int total = 0;
+    // A listing shows the newest 60 files; deleting makes room for older ones.
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        int n = fetchListing(camera);
-        total += n;
-        if (n == 0) break;
+        if (!fetchListing(camera, b, started) || b.full) break;
     }
-    Serial.printf("trailcam: %s: %d files saved\n", camera, total);
-    return total;
+    Serial.printf("trailcam: %s: %d files (%lu KB) copied%s\n", camera, b.saved,
+                  (unsigned long)(b.bytes >> 10), b.full ? ", more left on camera" : "");
 }
 
-// ---------------- Entry points ----------------
-
-int trailcamFetch() {
-    SD_MMC.mkdir(TRAILCAM_SD_DIR);
-    SD_MMC.mkdir(TRAILCAM_SENT_DIR);
-
-    WiFi.mode(WIFI_OFF);
-    Serial.printf("trailcam: Wi-Fi off, heap %lu\n", (unsigned long)ESP.getFreeHeap());
-    std::vector<Cam> cams = scanCameras();
-    Serial.printf("trailcam: %u camera(s) found, heap %lu\n", (unsigned)cams.size(),
-                  (unsigned long)ESP.getFreeHeap());
-
-    int total = 0;
-    for (const Cam& cam : cams) {
-        String addr = cam.addr.toString();
-        Serial.printf("trailcam: waking %s (%s)\n", cam.name.c_str(), addr.c_str());
-        if (!wake(cam)) continue;
-        WiFi.mode(WIFI_STA);
-        if (joinCamWifi(addr)) total += fetchCamera();
-        WiFi.mode(WIFI_OFF);
-    }
-    return total;
-}
-
-void trailcamUploadPending() {
+// Uploads everything in TRAILCAM_SD_DIR, moving each file into "sent" once the
+// server has it. False if the connection failed.
+static bool uploadPending() {
     File dir = SD_MMC.open(TRAILCAM_SD_DIR);
-    if (!dir) return;
+    if (!dir) return true;
     // Collect first: renaming entries while iterating the directory isn't safe.
     std::vector<String> names;
     for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
@@ -365,10 +377,14 @@ void trailcamUploadPending() {
     dir.close();
 
     int sent = 0;
+    bool ok = true;
     for (const String& name : names) {
         String path = String(TRAILCAM_SD_DIR "/") + name;
         UploadResult r = uploadFile(path.c_str(), "trailcam");
-        if (r == UploadResult::Failed) break;  // the rest would each wait out the same timeouts
+        if (r == UploadResult::Failed) {  // the rest would each wait out the same timeouts
+            ok = false;
+            break;
+        }
         if (r == UploadResult::Rejected) continue;
         String done = String(TRAILCAM_SENT_DIR "/") + name;
         SD_MMC.remove(done.c_str());
@@ -376,6 +392,54 @@ void trailcamUploadPending() {
         ++sent;
     }
     if (!names.empty()) Serial.printf("trailcam: uploaded %d/%u\n", sent, (unsigned)names.size());
+    return ok;
+}
+
+// ---------------- Entry point ----------------
+
+void trailcamCollect(bool (*upstream)()) {
+    SD_MMC.mkdir(TRAILCAM_SD_DIR);
+    SD_MMC.mkdir(TRAILCAM_SENT_DIR);
+    const uint32_t started = millis();
+
+    // Until earlier copies reach the server, fetching more would only fill the card.
+    if (WiFi.status() != WL_CONNECTED || !uploadPending()) {
+        Serial.println("trailcam: can't upload, not collecting");
+        return;
+    }
+
+    WiFi.mode(WIFI_OFF);
+    Serial.printf("trailcam: Wi-Fi off, heap %lu\n", (unsigned long)ESP.getFreeHeap());
+    std::vector<Cam> cams = scanCameras();
+    Serial.printf("trailcam: %u camera(s) found, heap %lu\n", (unsigned)cams.size(),
+                  (unsigned long)ESP.getFreeHeap());
+
+    // Each batch is uploaded before the next is fetched, and the next visit to
+    // the camera deletes what the server now has.
+    bool ok = true;
+    for (const Cam& cam : cams) {
+        while (ok) {
+            sdPrune();
+            Batch b;
+            String addr = cam.addr.toString();
+            WiFi.mode(WIFI_OFF);
+            Serial.printf("trailcam: waking %s (%s)\n", cam.name.c_str(), addr.c_str());
+            if (wake(cam)) {
+                WiFi.mode(WIFI_STA);
+                if (joinCamWifi(addr)) fetchCamera(b, started);
+            }
+            WiFi.mode(WIFI_OFF);
+            if (!b.saved) break;  // nothing new, or the camera didn't answer
+
+            ok = upstream() && uploadPending();
+            if (ok && millis() - started >= TRAILCAM_MAX_MIN * 60000UL) {
+                Serial.println("trailcam: time limit reached, the rest waits for the next run");
+                ok = false;
+            }
+        }
+        if (!ok) break;
+    }
+    if (WiFi.status() != WL_CONNECTED) upstream();
 }
 
 const char* trailcamSentDir() { return TRAILCAM_SENT_DIR; }

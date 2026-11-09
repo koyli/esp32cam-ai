@@ -255,17 +255,14 @@ static bool trailcamDue() {
 static bool trailcamDue() { return false; }
 #endif
 
-// Collects from the trail cameras, reconnects upstream and uploads what's new
-// (plus anything a previous run couldn't upload).
+// Collects from the trail cameras, uploading as it goes (plus anything a
+// previous run couldn't upload).
 static void collectTrailcams() {
     Serial.println("trailcam: collection starting");
     stopTime();
     mqtt.disconnect();
     sdPrune();
-    trailcamFetch();
-    Serial.println("trailcam: reconnecting upstream");
-    initWifi();
-    trailcamUploadPending();
+    trailcamCollect(initWifi);
     resetCapture();
     Serial.println("trailcam: collection finished");
 }
