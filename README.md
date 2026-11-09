@@ -57,11 +57,22 @@ default 00/06/12/18) and once at boot, the camera:
    `TRAILCAM_BLE_MATCH` entry and wakes each one (the E7 and E8 wake-ups from
    [koyli/trailcam](https://github.com/koyli/trailcam));
 2. joins the camera's `CAM...` Wi-Fi and copies new photos and videos to
-   `/trailcam` on the SD card as `<camera>_<YYYYMMDDHHMMSS>_<id>.JPG|MP4`,
-   deleting each from the trail camera once its size checks out;
-3. reconnects upstream and uploads them to the server, which saves them in
-   `~/capture/trailcam` for trailcam-review. Uploaded files move to
-   `/trailcam/sent`; failed ones are retried on the next run.
+   `/trailcam` on the SD card as `<camera>_<YYYYMMDDHHMMSS>_<id>.JPG|MP4`, up to
+   `TRAILCAM_BATCH_MB` (default 100 MB) at a time;
+3. reconnects upstream and uploads the batch to the server, which saves it in
+   `~/capture/trailcam` for trailcam-review, moving each file to
+   `/trailcam/sent` once the server has it;
+4. goes back to the camera, deletes the files the server now has and copies
+   the next batch, until nothing is left.
+
+A file is deleted from the trail camera only when `/trailcam/sent` holds a file
+of the same name (camera, time, id and type) and size, checked against a fresh
+listing seconds before the delete. So another collector working on the same
+camera, such as a second ESP32 or the Linux client, can't make it delete the
+wrong file: if the file has already gone, nothing is deleted. A failed upload
+ends the run with the rest still on the camera, and so does `TRAILCAM_MAX_MIN`
+(default 30 minutes), so motion capture isn't paused for hours; the next run
+carries on.
 
 Motion capture pauses while this runs, and the upstream link (and any extender
 clients) drops. The separate environment exists because Bluetooth doesn't fit

@@ -25,14 +25,17 @@ static const WifiCred WIFI_CREDS[] = {
 // (GardePro E7/E8 style, see github.com/koyli/trailcam). At each hour in
 // TRAILCAM_HOURS (UTC), and once at boot, the device wakes every camera whose
 // Bluetooth name or address starts with a TRAILCAM_BLE_MATCH entry, joins its
-// "CAM..." Wi-Fi, copies new files to TRAILCAM_SD_DIR and deletes them from the
-// camera, then uploads them to the server's trail-camera folder. Motion capture
-// pauses, and the upstream link (and any extender clients) drops, while it runs.
+// "CAM..." Wi-Fi and copies new files to TRAILCAM_SD_DIR in batches, uploading
+// each batch to the server's trail-camera folder before fetching the next. A file
+// is deleted from the camera only once the server has it. Motion capture pauses,
+// and the upstream link (and any extender clients) drops, while it runs.
 // #define TRAILCAM_WIFI_PASS   "CAMERA_WIFI_PASSWORD"
 // #define TRAILCAM_BLE_MATCH   "G_E7", "G_E8"
 // #define TRAILCAM_HOURS       0, 6, 12, 18
 // #define TRAILCAM_SD_DIR      "/trailcam"   // uploaded files move to <dir>/sent
 // #define TRAILCAM_BLE_SCAN_S  30
+// #define TRAILCAM_BATCH_MB    100   // copied per trip to the camera
+// #define TRAILCAM_MAX_MIN     30    // no new batch after this; the rest waits
 
 // Flashes 5 times if Wi-Fi fails at boot. GPIO4 is the white flash LED. For the
 // small red LED on the back of the board, use 33 and LOW.
