@@ -297,8 +297,9 @@ static void sendQueuedClip() {
 }
 
 void setup() {
+    setCpuFrequencyMhz(160);  // the default 240 MHz runs warmer, for little gain here
     Serial.begin(115200);
-    Serial.println("\nesp32cam-ai boot");
+    Serial.printf("\nesp32cam-ai boot, cpu %lu MHz\n", (unsigned long)getCpuFrequencyMhz());
     initDeviceId();
     Serial.printf("device id %s, boot %lu\n", device_id, (unsigned long)boot_count);
 
