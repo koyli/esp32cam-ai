@@ -13,6 +13,10 @@ services:
       - /home/ubuntu/trailcam-review/web:/srv/cams/web:ro
       - /home/ubuntu/capture:/srv/capture:ro
       - /home/ubuntu/.config/trailcam/cams.htpasswd:/etc/nginx/cams.htpasswd:ro
+    networks:
+      - default
+      # Reaches trailcam-review's web service, which records answers given on the pages.
+      - cams
     depends_on:
       - upload_server
     restart: unless-stopped
@@ -31,3 +35,8 @@ services:
       - TRAILCAM_DIR=/trailcam
       - MOTION_DIR=/motion
     restart: unless-stopped
+
+networks:
+  # Created by trailcam-review (`docker compose up -d web` there), so start that first.
+  cams:
+    external: true
